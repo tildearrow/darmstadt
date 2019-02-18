@@ -72,11 +72,14 @@ void* unbuff(void* data) {
             } else {
               // read a pixel
               printf("addr: %.16lx\n",addr);
-              addr[0]=255;
-              for (int i=0; i<128; i++) {
+              FILE* f;
+              f=fopen("out","w");
+              fwrite(addr,1,3840*2160*4,f);
+              fclose(f);
+              /*for (int i=0; i<128; i++) {
                 printf("%.2x",addr[i]);
               }
-              printf("\n");
+              printf("\n");*/
               if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
                 printf("could not unmap buffer: %x...\n",vaStat);
               }
