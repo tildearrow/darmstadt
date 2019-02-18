@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -30,10 +31,12 @@ string tstos(struct timespec ts);
 struct timespec curTime(clockid_t clockSource);
 
 struct qFrame {
-  int fd;
+  long fd;
   unsigned int format, pitch;
   size_t objsize;
   struct timespec ts;
-  qFrame(int a, unsigned int b, unsigned int c, struct timespec d): fd(a), pitch(c), objsize(b*c), ts(d) {}
-  qFrame(): fd(-1), pitch(0), objsize(0), ts(mkts(0,0)) {}
+  drmModeFB* fb;
+  drmModePlane* plane;
+  qFrame(int a, unsigned int b, unsigned int c, struct timespec d, drmModeFBPtr f, drmModePlanePtr pla): fd(a), pitch(c), objsize(b*c), ts(d), fb(f), plane(pla) {}
+  qFrame(): fd(-1), pitch(0), objsize(0), ts(mkts(0,0)), fb(NULL), plane(NULL) {}
 };

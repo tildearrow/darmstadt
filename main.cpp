@@ -21,45 +21,80 @@ VADisplay vaInst;
 VASurfaceAttribExternalBuffers vaBD;
 VASurfaceID surface;
 VASurfaceAttrib vaAttr[2];
+VAImage img;
+int vaStat;
 
 int fuck, shit;
 
 void* unbuff(void* data) {
   qFrame f;
   unsigned char* addr;
+  unsigned long portedFD;
   while (1) {
     while (!frames.empty()) {
       f=frames.back();
       frames.pop();
       printf("popped frame. there are now %lu frames\n",frames.size());
+      portedFD=f.fd;
+      vaBD.buffers=&portedFD;
+      vaBD.pixel_format=VA_FOURCC_BGRX;
+      vaBD.width=dw;
+      vaBD.height=dh;
+      vaBD.data_size=f.objsize;
+      vaBD.num_buffers=1;
+      vaBD.flags=0;
+      vaBD.pitches[0]=f.pitch;
+      vaBD.offsets[0]=0;
+      vaBD.num_planes=1;
       
-      vaAttr[0]={   
-            .type  = VASurfaceAttribMemoryType,
-            .flags = VA_SURFACE_ATTRIB_SETTABLE,
-            
-        };
-        vaAttr[0].value.type    = VAGenericValueTypeInteger;
-            vaAttr[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
-        vaAttr[1]={   
-            .type  = VASurfaceAttribExternalBufferDescriptor,
-            .flags = VA_SURFACE_ATTRIB_SETTABLE,
-        };
-            vaAttr[1].value.type    = VAGenericValueTypePointer;
-            vaAttr[1].value.value.p = &vaBD;
-            
-            
+      vaAttr[0].type  = VASurfaceAttribMemoryType;
+      vaAttr[0].flags = VA_SURFACE_ATTRIB_SETTABLE;
+      vaAttr[0].value.type    = VAGenericValueTypeInteger;
+      vaAttr[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+      vaAttr[1].type  = VASurfaceAttribExternalBufferDescriptor;
+      vaAttr[1].flags = VA_SURFACE_ATTRIB_SETTABLE;
+      vaAttr[1].value.type    = VAGenericValueTypePointer;
+      vaAttr[1].value.value.p = &vaBD;
       
-      addr=(unsigned char*)mmap(NULL,f.objsize,PROT_READ,MAP_SHARED,f.fd,0);
-      if (addr==MAP_FAILED) {
-        perror("could not map this frame");
+      // TODO: retrieve 1 frame
+      if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&surface,1,vaAttr,2))!=VA_STATUS_SUCCESS) {
+        printf("could not create surface... %x\n",vaStat);
       } else {
-        printf("the first pixel has red %d\n",addr[0]);
-        munmap(addr,f.objsize);
+        if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
+          printf("no surface sync %x\n",vaStat);
+        }
+          if ((vaStat=vaDeriveImage(vaInst,surface,&img))!=VA_STATUS_SUCCESS) {
+            printf("could not derive image... %x\n",vaStat);
+          } else {
+            printf("size: %d\n",img.data_size);
+            if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
+              printf("oh come on! %x\n",vaStat);
+            } else {
+              // read a pixel
+              printf("addr: %.16lx\n",addr);
+              addr[0]=255;
+              for (int i=0; i<128; i++) {
+                printf("%.2x",addr[i]);
+              }
+              printf("\n");
+              if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
+                printf("could not unmap buffer: %x...\n",vaStat);
+              }
+              addr=NULL;
+            }
+            if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
+              printf("destroy image error %x\n",vaStat);
+            }
+          }
+
+      if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
+        printf("destroy surf error %x\n",vaStat);
+      }
       }
       
-      // TODO: vaCreateSurfaces!!!
-      
       close(f.fd);
+      drmModeFreeFB(f.fb);
+      drmModeFreePlane(f.plane);
     }
     usleep(10000);
   }
@@ -98,6 +133,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   
+  printf("number of planes: %d\n",planeres->count_planes);
   for (unsigned int i=0; i<planeres->count_planes; i++) {
     plane=drmModeGetPlane(fd,planeres->planes[i]);
     if (plane==NULL) {
@@ -198,10 +234,8 @@ int main(int argc, char** argv) {
       break;
     }
     printf("prime FD: %d\n",primefd);
-    frames.push(qFrame(primefd,fb->height,fb->pitch,vtime));
-    
-    drmModeFreeFB(fb);
-    drmModeFreePlane(plane);
+    frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
+
     
     frame++;
     if (false) break;
