@@ -22,6 +22,10 @@ VASurfaceAttribExternalBuffers vaBD;
 VASurfaceID surface;
 VASurfaceAttrib vaAttr[2];
 VAImage img;
+VAImageFormat imgFormat;
+VAImageFormat allowedFormats[2048];
+int allowedFormatsSize;
+int theFormat;
 int vaStat;
 
 int fuck, shit;
@@ -63,23 +67,27 @@ void* unbuff(void* data) {
         if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
           printf("no surface sync %x\n",vaStat);
         }
-          if ((vaStat=vaDeriveImage(vaInst,surface,&img))!=VA_STATUS_SUCCESS) {
-            printf("could not derive image... %x\n",vaStat);
+          if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
+            printf("could not create image... %x\n",vaStat);
           } else {
             printf("size: %d\n",img.data_size);
+            if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+              printf("bullshit %x\n",vaStat);
+              exit(1);
+            }
             if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
               printf("oh come on! %x\n",vaStat);
             } else {
               // read a pixel
               printf("addr: %.16lx\n",addr);
-              FILE* f;
+              /*FILE* f;
               f=fopen("out","w");
               fwrite(addr,1,3840*2160*4,f);
-              fclose(f);
-              /*for (int i=0; i<128; i++) {
-                printf("%.2x",addr[i]);
+              fclose(f);*/
+              for (int i=0; i<128; i++) {
+                printf("%.2x",addr[3840*4*900+800*4+i]);
               }
-              printf("\n");*/
+              printf("\n");
               if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
                 printf("could not unmap buffer: %x...\n",vaStat);
               }
@@ -189,6 +197,17 @@ int main(int argc, char** argv) {
   }
   
   printf("va-api instance opened (%s).\n",vaQueryVendorString(vaInst));
+  
+  vaQueryImageFormats(vaInst,allowedFormats,&allowedFormatsSize);
+  
+  for (int i=0; i<allowedFormatsSize; i++) {
+    printf("format %d: - %.8x\n",i,allowedFormats[i].fourcc);
+    if (allowedFormats[i].fourcc==VA_FOURCC_BGRX) {
+      printf("%d is the format!\n",i);
+      theFormat=i;
+      break;
+    }
+  }
   
   if (pthread_create(&thr,NULL,unbuff,NULL)<0) {
     printf("could not create encoding thread...\n");
