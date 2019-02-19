@@ -107,7 +107,7 @@ void* unbuff(void* data) {
       drmModeFreeFB(f.fb);
       drmModeFreePlane(f.plane);
     }
-    usleep(10000);
+    usleep(1000);
   }
   return NULL;
 }
