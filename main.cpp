@@ -30,82 +30,28 @@ int vaStat;
 
 int fuck, shit;
 
+unsigned char* addr;
+unsigned long portedFD;
+struct timespec tStart, tEnd;
+
+AVCodecContext* encoder;
+AVCodec* encInfo;
+AVFrame* hardFrame;
+AVBufferRef* ffhardInst;
+AVBufferRef* wrappedSource;
+AVHWDeviceContext* extractSource;
+
 void* unbuff(void* data) {
   qFrame f;
-  unsigned char* addr;
-  unsigned long portedFD;
+  
   while (1) {
     while (!frames.empty()) {
       f=frames.back();
       frames.pop();
       printf("popped frame. there are now %lu frames\n",frames.size());
-      portedFD=f.fd;
-      vaBD.buffers=&portedFD;
-      vaBD.pixel_format=VA_FOURCC_BGRX;
-      vaBD.width=dw;
-      vaBD.height=dh;
-      vaBD.data_size=f.objsize;
-      vaBD.num_buffers=1;
-      vaBD.flags=0;
-      vaBD.pitches[0]=f.pitch;
-      vaBD.offsets[0]=0;
-      vaBD.num_planes=1;
+      /*
       
-      vaAttr[0].type  = VASurfaceAttribMemoryType;
-      vaAttr[0].flags = VA_SURFACE_ATTRIB_SETTABLE;
-      vaAttr[0].value.type    = VAGenericValueTypeInteger;
-      vaAttr[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
-      vaAttr[1].type  = VASurfaceAttribExternalBufferDescriptor;
-      vaAttr[1].flags = VA_SURFACE_ATTRIB_SETTABLE;
-      vaAttr[1].value.type    = VAGenericValueTypePointer;
-      vaAttr[1].value.value.p = &vaBD;
-      
-      // TODO: retrieve 1 frame
-      if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&surface,1,vaAttr,2))!=VA_STATUS_SUCCESS) {
-        printf("could not create surface... %x\n",vaStat);
-      } else {
-        if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
-          printf("no surface sync %x\n",vaStat);
-        }
-          if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
-            printf("could not create image... %x\n",vaStat);
-          } else {
-            printf("size: %d\n",img.data_size);
-            if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
-              printf("bullshit %x\n",vaStat);
-              exit(1);
-            }
-            if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
-              printf("oh come on! %x\n",vaStat);
-            } else {
-              // read a pixel
-              printf("addr: %.16lx\n",addr);
-              /*FILE* f;
-              f=fopen("out","w");
-              fwrite(addr,1,3840*2160*4,f);
-              fclose(f);*/
-              for (int i=0; i<128; i++) {
-                printf("%.2x",addr[3840*4*900+800*4+i]);
-              }
-              printf("\n");
-              if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
-                printf("could not unmap buffer: %x...\n",vaStat);
-              }
-              addr=NULL;
-            }
-            if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
-              printf("destroy image error %x\n",vaStat);
-            }
-          }
-
-      if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
-        printf("destroy surf error %x\n",vaStat);
-      }
-      }
-      
-      close(f.fd);
-      drmModeFreeFB(f.fb);
-      drmModeFreePlane(f.plane);
+      */
     }
     usleep(1000);
   }
@@ -209,6 +155,34 @@ int main(int argc, char** argv) {
     }
   }
   
+  wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
+  extractSource=(AVHWDeviceContext*)wrappedSource->data;
+  
+  extractSource->hwctx=vaInst;
+  
+  printf("creating FFmpeg hardware instance\n");
+  if (av_hwdevice_ctx_create_derived(&ffhardInst, AV_HWDEVICE_TYPE_VAAPI, wrappedSource, 0)<0) {
+    printf("check me later\n");
+  }
+  
+  printf("creating encoder\n");
+  if ((encInfo=avcodec_find_encoder_by_name("hevc_vaapi"))==NULL) {
+    printf("could not find encoder...\n");
+    return 1;
+  }
+  encoder=avcodec_alloc_context3(encInfo);
+  encoder->width=dw;
+  encoder->height=dh;
+  encoder->time_base=(AVRational){1,60};
+  encoder->framerate=(AVRational){60,1};
+  encoder->sample_aspect_ratio=(AVRational){1,1};
+  encoder->pix_fmt=AV_PIX_FMT_VAAPI;
+  printf("setting hwframe ctx\n");
+  if (set_hwframe_ctx(encoder,ffhardInst)<0) {
+    printf("could not set hardware to FFmpeg\n");
+    return 1;
+  }
+  
   if (pthread_create(&thr,NULL,unbuff,NULL)<0) {
     printf("could not create encoding thread...\n");
     return 1;
@@ -225,13 +199,15 @@ int main(int argc, char** argv) {
     vblank.request.type=DRM_VBLANK_RELATIVE;
     drmWaitVBlank(fd,&vblank);
     
+    //printf("\x1b[2J\x1b[1;1H\n");
+    
     vtime=curTime(CLOCK_MONOTONIC)-btime;
     if (btime==mkts(0,0)) {
       btime=vtime;
       vtime=mkts(0,0);
     }
-    printf("frame % 8d: %s\n",frame,tstos(vtime).c_str());
-    
+    printf("frame % 8d: %.2ld:%.2ld:%.2ld.%.3ld\n",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000);
+    tStart=curTime(CLOCK_MONOTONIC);
     plane=drmModeGetPlane(fd,planeid);
     if (plane==NULL) {
       printf("plane crash\n");
@@ -255,9 +231,77 @@ int main(int argc, char** argv) {
       printf("couldn't turn handle to FD :(\n");
       break;
     }
-    printf("prime FD: %d\n",primefd);
-    frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
+    //printf("prime FD: %d\n",primefd);
+    
+    // RETRIEVE CODE BEGIN //
+    portedFD=primefd;
+    vaBD.buffers=&portedFD;
+    vaBD.pixel_format=VA_FOURCC_BGRX;
+    vaBD.width=dw;
+    vaBD.height=dh;
+    vaBD.data_size=fb->pitch*fb->height;
+    vaBD.num_buffers=1;
+    vaBD.flags=0;
+    vaBD.pitches[0]=fb->pitch;
+    vaBD.offsets[0]=0;
+    vaBD.num_planes=1;
+    
+    vaAttr[0].type=VASurfaceAttribMemoryType;
+    vaAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
+    vaAttr[0].value.type=VAGenericValueTypeInteger;
+    vaAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    vaAttr[1].type=VASurfaceAttribExternalBufferDescriptor;
+    vaAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
+    vaAttr[1].value.type=VAGenericValueTypePointer;
+    vaAttr[1].value.value.p=&vaBD;
+    
+    if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&surface,1,vaAttr,2))!=VA_STATUS_SUCCESS) {
+      printf("could not create surface... %x\n",vaStat);
+    } else {
+      if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
+        printf("no surface sync %x\n",vaStat);
+      }
+      if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
+        printf("could not create image... %x\n",vaStat);
+      } else {
+        //printf("size: %d\n",img.data_size);
+        
+        if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+          printf("bullshit %x\n",vaStat);
+          exit(1);
+        }
+        
+        if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
+          printf("oh come on! %x\n",vaStat);
+        } else {
+          // read a pixel
+          //printf("addr: %.16lx\n",addr);
+          for (int i=0; i<128; i++) {
+            printf("%.2x",addr[3840*4*900+800*4+i]);
+          }
+          printf("\n");
+          if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
+            printf("could not unmap buffer: %x...\n",vaStat);
+          }
+          addr=NULL;
+        }
+        if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
+          printf("destroy image error %x\n",vaStat);
+        }
+      }
 
+      if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
+        printf("destroy surf error %x\n",vaStat);
+      }
+    }
+    // RETRIEVE CODE END //
+    
+    close(primefd);
+    drmModeFreeFB(fb);
+    drmModeFreePlane(plane);
+    //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
+tEnd=curTime(CLOCK_MONOTONIC);
+        //printf("get time: %s\n",tstos(tEnd-tStart).c_str());
     
     frame++;
     if (false) break;

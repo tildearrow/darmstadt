@@ -14,6 +14,12 @@
 #include <string>
 #include <queue>
 
+// METHOD 1: use our own method for capture, and FFmpeg for encode
+extern "C" {
+  #include <libavcodec/avcodec.h>
+  #include <libavutil/hwcontext.h>
+}
+
 #define DEVICE_PATH "/dev/dri/card0"
 
 typedef std::string string;
@@ -40,3 +46,6 @@ struct qFrame {
   qFrame(int a, unsigned int b, unsigned int c, struct timespec d, drmModeFBPtr f, drmModePlanePtr pla): fd(a), pitch(c), objsize(b*c), ts(d), fb(f), plane(pla) {}
   qFrame(): fd(-1), pitch(0), objsize(0), ts(mkts(0,0)), fb(NULL), plane(NULL) {}
 };
+
+int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);
+

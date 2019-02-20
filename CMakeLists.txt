@@ -4,7 +4,7 @@ project(darmstadt)
 
 include_directories(/usr/include/libdrm)
 
-add_executable(darmstadt main.cpp time.cpp)
-target_link_libraries(darmstadt drm pthread va va-drm)
+add_executable(darmstadt main.cpp time.cpp portfunc.cpp)
+target_link_libraries(darmstadt drm pthread va va-drm avutil avcodec)
 
 install(TARGETS darmstadt RUNTIME DESTINATION bin)
