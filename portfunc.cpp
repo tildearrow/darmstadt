@@ -21,11 +21,10 @@ int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx)
     frames_ctx->height    = dh;
     frames_ctx->initial_pool_size = 20;
     printf("ctx init\n");
-    printf("what the\n");
     ctx->hw_frames_ctx = av_buffer_ref(hw_frames_ref);
     if (!ctx->hw_frames_ctx)
         err = AVERROR(ENOMEM);
-    av_buffer_unref(&hw_frames_ref);
+    //av_buffer_unref(&hw_frames_ref);
     return err;
 }
 static int encode_write(AVCodecContext *avctx, AVFrame *frame, FILE *fout)

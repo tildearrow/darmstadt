@@ -40,6 +40,8 @@ AVFrame* hardFrame;
 AVBufferRef* ffhardInst;
 AVBufferRef* wrappedSource;
 AVHWDeviceContext* extractSource;
+AVBufferRef* hardFrameDataR;
+
 
 void* unbuff(void* data) {
   qFrame f;
@@ -158,12 +160,14 @@ int main(int argc, char** argv) {
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
   extractSource=(AVHWDeviceContext*)wrappedSource->data;
   
-  extractSource->hwctx=vaInst;
-  
   printf("creating FFmpeg hardware instance\n");
   if (av_hwdevice_ctx_create_derived(&ffhardInst, AV_HWDEVICE_TYPE_VAAPI, wrappedSource, 0)<0) {
     printf("check me later\n");
   }
+  ((AVVAAPIDeviceContext*)(extractSource->hwctx))->display=vaInst;
+  printf("pre\n");
+  av_hwdevice_ctx_init(ffhardInst);
+  printf("post!\n");
   
   printf("creating encoder\n");
   if ((encInfo=avcodec_find_encoder_by_name("hevc_vaapi"))==NULL) {
@@ -178,8 +182,26 @@ int main(int argc, char** argv) {
   encoder->sample_aspect_ratio=(AVRational){1,1};
   encoder->pix_fmt=AV_PIX_FMT_VAAPI;
   printf("setting hwframe ctx\n");
+  /*
   if (set_hwframe_ctx(encoder,ffhardInst)<0) {
     printf("could not set hardware to FFmpeg\n");
+    return 1;
+  }*/
+  
+  hardFrameDataR=av_hwframe_ctx_alloc(ffhardInst);
+  ((AVHWFramesContext*)hardFrameDataR->data)->width=dw;
+  ((AVHWFramesContext*)hardFrameDataR->data)->height=dh;
+  //((AVHWFramesContext*)hardFrameDataR->data)->initial_pool_size = 200;
+  ((AVHWFramesContext*)hardFrameDataR->data)->format=AV_PIX_FMT_VAAPI;
+  ((AVHWFramesContext*)hardFrameDataR->data)->sw_format=AV_PIX_FMT_NV12;
+  printf("%#lx\n",vaInst);
+  av_hwframe_ctx_init(hardFrameDataR);
+  encoder->hw_frames_ctx=hardFrameDataR;
+  
+  printf("%#lx\n",vaInst);
+  
+  if ((avcodec_open2(encoder,encInfo,NULL))<0) {
+    printf("could not open encoder :(\n");
     return 1;
   }
   
@@ -302,6 +324,10 @@ int main(int argc, char** argv) {
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
 tEnd=curTime(CLOCK_MONOTONIC);
         //printf("get time: %s\n",tstos(tEnd-tStart).c_str());
+
+    // ENCODE SINGLE-THREAD CODE BEGIN //
+
+    // ENCODE SINGLE-THREAD CODE END //
     
     frame++;
     if (false) break;

@@ -18,6 +18,7 @@
 extern "C" {
   #include <libavcodec/avcodec.h>
   #include <libavutil/hwcontext.h>
+  #include <libavutil/hwcontext_vaapi.h>
 }
 
 #define DEVICE_PATH "/dev/dri/card0"
