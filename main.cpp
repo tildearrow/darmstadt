@@ -41,7 +41,11 @@ AVBufferRef* ffhardInst;
 AVBufferRef* wrappedSource;
 AVHWDeviceContext* extractSource;
 AVBufferRef* hardFrameDataR;
+AVFrame* hardFrameRT;
+AVVAAPIFramesContext* massAbbrev;
+AVDictionary* encOpt;
 
+FILE* f;
 
 void* unbuff(void* data) {
   qFrame f;
@@ -170,14 +174,14 @@ int main(int argc, char** argv) {
   printf("post!\n");
   
   printf("creating encoder\n");
-  if ((encInfo=avcodec_find_encoder_by_name("hevc_vaapi"))==NULL) {
+  if ((encInfo=avcodec_find_encoder_by_name("h264_vaapi"))==NULL) {
     printf("could not find encoder...\n");
     return 1;
   }
   encoder=avcodec_alloc_context3(encInfo);
   encoder->width=dw;
   encoder->height=dh;
-  encoder->time_base=(AVRational){1,60};
+  encoder->time_base=(AVRational){1,1000};
   encoder->framerate=(AVRational){60,1};
   encoder->sample_aspect_ratio=(AVRational){1,1};
   encoder->pix_fmt=AV_PIX_FMT_VAAPI;
@@ -200,8 +204,17 @@ int main(int argc, char** argv) {
   
   printf("%#lx\n",vaInst);
   
-  if ((avcodec_open2(encoder,encInfo,NULL))<0) {
+  av_dict_set(&encOpt,"qp","25",0);
+  av_dict_set(&encOpt,"compression_level","15",0);
+  
+  if ((avcodec_open2(encoder,encInfo,&encOpt))<0) {
     printf("could not open encoder :(\n");
+    return 1;
+  }
+  
+  f=fopen("out.h264","w");
+  if (f==NULL) {
+    perror("could not open file for writing");
     return 1;
   }
   
@@ -283,6 +296,7 @@ int main(int argc, char** argv) {
       if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
         printf("no surface sync %x\n",vaStat);
       }
+      /*
       if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
         printf("could not create image... %x\n",vaStat);
       } else {
@@ -311,6 +325,21 @@ int main(int argc, char** argv) {
           printf("destroy image error %x\n",vaStat);
         }
       }
+      */
+      
+      // ENCODE SINGLE-THREAD CODE BEGIN //
+    hardFrame=av_frame_alloc();
+    av_hwframe_get_buffer(hardFrameDataR,hardFrame,0);
+    hardFrame->pts=vtime.tv_sec*1000+vtime.tv_nsec/1000000;
+    printf("pts: %ld\n",hardFrame->pts);
+
+    massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
+    
+    // HACK!
+    encode_write(encoder,hardFrame,f);
+
+    // ENCODE SINGLE-THREAD CODE END //
+    av_frame_free(&hardFrame);
 
       if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
         printf("destroy surf error %x\n",vaStat);
@@ -323,11 +352,9 @@ int main(int argc, char** argv) {
     drmModeFreePlane(plane);
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
 tEnd=curTime(CLOCK_MONOTONIC);
-        //printf("get time: %s\n",tstos(tEnd-tStart).c_str());
+        printf("get time: %s\n",tstos(tEnd-tStart).c_str());
 
-    // ENCODE SINGLE-THREAD CODE BEGIN //
-
-    // ENCODE SINGLE-THREAD CODE END //
+    
     
     frame++;
     if (false) break;

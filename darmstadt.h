@@ -49,4 +49,4 @@ struct qFrame {
 };
 
 int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);
-
+int encode_write(AVCodecContext *avctx, AVFrame *frame, FILE *fout);

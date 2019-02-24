@@ -27,17 +27,20 @@ int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx)
     //av_buffer_unref(&hw_frames_ref);
     return err;
 }
-static int encode_write(AVCodecContext *avctx, AVFrame *frame, FILE *fout)
+int encode_write(AVCodecContext *avctx, AVFrame *frame, FILE *fout)
 {
     int ret = 0;
+    struct timespec midTimeS, midTimeE;
     AVPacket enc_pkt;
-    av_init_packet(&enc_pkt);
     enc_pkt.data = NULL;
     enc_pkt.size = 0;
+    av_init_packet(&enc_pkt);
+    midTimeS=curTime(CLOCK_MONOTONIC);
     if ((ret = avcodec_send_frame(avctx, frame)) < 0) {
         fprintf(stderr, "Error code: %d\n",ret);
         goto end;
     }
+    midTimeE=curTime(CLOCK_MONOTONIC); printf("midTime: %s\n",tstos(midTimeE-midTimeS).c_str());
     while (1) {
         ret = avcodec_receive_packet(avctx, &enc_pkt);
         if (ret)
