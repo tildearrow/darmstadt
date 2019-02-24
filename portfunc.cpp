@@ -27,7 +27,7 @@ int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx)
     //av_buffer_unref(&hw_frames_ref);
     return err;
 }
-int encode_write(AVCodecContext *avctx, AVFrame *frame, FILE *fout)
+int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout)
 {
     int ret = 0;
     struct timespec midTimeS, midTimeE;
@@ -46,7 +46,7 @@ int encode_write(AVCodecContext *avctx, AVFrame *frame, FILE *fout)
         if (ret)
             break;
         enc_pkt.stream_index = 0;
-        ret = fwrite(enc_pkt.data, enc_pkt.size, 1, fout);
+        av_interleaved_write_frame(fout,&enc_pkt);
         av_packet_unref(&enc_pkt);
     }
 end:

@@ -17,6 +17,7 @@
 // METHOD 1: use our own method for capture, and FFmpeg for encode
 extern "C" {
   #include <libavcodec/avcodec.h>
+  #include <libavformat/avformat.h>
   #include <libavutil/hwcontext.h>
   #include <libavutil/hwcontext_vaapi.h>
 }
@@ -49,4 +50,4 @@ struct qFrame {
 };
 
 int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);
-int encode_write(AVCodecContext *avctx, AVFrame *frame, FILE *fout);
+int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext* fout);

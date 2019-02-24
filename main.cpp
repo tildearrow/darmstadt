@@ -45,6 +45,11 @@ AVFrame* hardFrameRT;
 AVVAAPIFramesContext* massAbbrev;
 AVDictionary* encOpt;
 
+AVFormatContext* out;
+AVStream* stream;
+
+AVDictionary* badCodingPractice=NULL;
+
 FILE* f;
 
 void* unbuff(void* data) {
@@ -212,12 +217,36 @@ int main(int argc, char** argv) {
     return 1;
   }
   
-  f=fopen("out.h264","w");
-  if (f==NULL) {
-    perror("could not open file for writing");
+  // create stream
+  avformat_alloc_output_context2(&out,NULL,NULL,"out.mkv");
+  if (out==NULL) {
+    printf("couldn't open output...\n");
     return 1;
   }
-  
+  stream=avformat_new_stream(out,NULL);
+  stream->id=0;
+  stream->time_base=(AVRational){1,1000};
+
+  if (out->oformat->flags&AVFMT_GLOBALHEADER)
+        encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+  avcodec_parameters_from_context(stream->codecpar,encoder);
+
+if (!(out->oformat->flags & AVFMT_NOFILE)) {
+        if (avio_open(&out->pb, "out.mkv", AVIO_FLAG_WRITE)<0) {
+          printf("could not open file in avio...\n");
+          return 1;
+}
+    }
+
+  int retv;
+  char e[4096];
+  if (retv=avformat_write_header(out,&badCodingPractice)<0) {
+    av_make_error_string(e,4095,retv);
+    printf("could not write header... %s\n",e);
+    return 1;
+  }
+
   if (pthread_create(&thr,NULL,unbuff,NULL)<0) {
     printf("could not create encoding thread...\n");
     return 1;
@@ -336,7 +365,7 @@ int main(int argc, char** argv) {
     massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
     
     // HACK!
-    encode_write(encoder,hardFrame,f);
+    encode_write(encoder,hardFrame,out);
 
     // ENCODE SINGLE-THREAD CODE END //
     av_frame_free(&hardFrame);
