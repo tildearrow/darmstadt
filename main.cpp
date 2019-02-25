@@ -1,5 +1,7 @@
 #include "darmstadt.h"
 
+bool quit;
+
 int fd, primefd;
 
 drmModePlaneRes* planeres;
@@ -69,8 +71,16 @@ void* unbuff(void* data) {
   return NULL;
 }
 
+void handleTerm(int data) {
+  quit=true;
+}
+
 int main(int argc, char** argv) {
+  struct sigaction saTerm;
+  saTerm.sa_handler=handleTerm;
+  sigemptyset(&saTerm.sa_mask);
   drmVersionPtr ver;
+  quit=false;
   // open card
   fd=open(DEVICE_PATH,O_RDWR);
   if (fd<0) {
@@ -247,6 +257,10 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     return 1;
   }
 
+  sigaction(SIGINT,&saTerm,NULL);
+  sigaction(SIGTERM,&saTerm,NULL);
+  sigaction(SIGHUP,&saTerm,NULL);
+
   if (pthread_create(&thr,NULL,unbuff,NULL)<0) {
     printf("could not create encoding thread...\n");
     return 1;
@@ -386,9 +400,22 @@ tEnd=curTime(CLOCK_MONOTONIC);
     
     
     frame++;
-    if (false) break;
+    if (quit) break;
   }
   
+  if (av_write_trailer(out,&badCodingPractice)<0) {
+    printf("could not finish file...\n");
+  }
+
+  avio->closep(&out->pb);
+  avformat_free_context(out);
+
+  avcodec_free_context(&encoder);
+  vaDestroyContext(vaInst,scaler);
+  vaTerminate(vaInst);
+
+  close(fd);
+
   printf("finished.\n");
   return 0;
 }
