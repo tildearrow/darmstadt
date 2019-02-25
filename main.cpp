@@ -10,7 +10,7 @@ drmVBlank vblank;
 unsigned int planeid;
 
 int frame;
-struct timespec btime, vtime;
+struct timespec btime, vtime, dtime;
 
 int dw, dh;
 
@@ -19,8 +19,14 @@ std::queue<qFrame> frames;
 
 VADisplay vaInst;
 VASurfaceAttribExternalBuffers vaBD;
+VAContextID scalerC;
 VASurfaceID surface;
+VASurfaceID thisFluctuates;
+VAConfigID vaConf;
+VABufferID scalerBuf;
 VASurfaceAttrib vaAttr[2];
+VAProcPipelineParameterBuffer scaler;
+VARectangle scaleRegion;
 VAImage img;
 VAImageFormat imgFormat;
 VAImageFormat allowedFormats[2048];
@@ -52,6 +58,8 @@ AVDictionary* badCodingPractice=NULL;
 
 FILE* f;
 
+const char* outname="out.ts";
+
 void* unbuff(void* data) {
   qFrame f;
   
@@ -69,8 +77,45 @@ void* unbuff(void* data) {
   return NULL;
 }
 
+static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout, AVStream* str)
+{
+    int ret = 0;
+    struct timespec midTimeS, midTimeE;
+    AVPacket enc_pkt;
+    enc_pkt.data = NULL;
+    enc_pkt.size = 0;
+    av_init_packet(&enc_pkt);
+    midTimeS=curTime(CLOCK_MONOTONIC);
+    if ((ret = avcodec_send_frame(avctx, frame)) < 0) {
+        fprintf(stderr, "Error code: %d\n",ret);
+        goto end;
+    }
+    //midTimeE=curTime(CLOCK_MONOTONIC); printf("midTime: %s\n",tstos(midTimeE-midTimeS).c_str());
+    while (1) {
+        ret = avcodec_receive_packet(avctx, &enc_pkt);
+        if (ret)
+            break;
+        enc_pkt.stream_index = 0;
+        str->cur_dts = frame->pts-1;
+        enc_pkt.pts = frame->pts;
+        if (av_write_frame(fout,&enc_pkt)<0) {
+          printf("unable to write frame");
+}
+        avformat_flush(fout);
+        avio_flush(fout->pb);
+        av_packet_unref(&enc_pkt);
+    }
+end:
+    ret = ((ret == AVERROR(EAGAIN)) ? 0 : -1);
+    return ret;
+}
+
+
 int main(int argc, char** argv) {
   drmVersionPtr ver;
+  if (argc>1) {
+    outname=argv[1];
+  }
   // open card
   fd=open(DEVICE_PATH,O_RDWR);
   if (fd<0) {
@@ -166,6 +211,20 @@ int main(int argc, char** argv) {
     }
   }
   
+  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,dw,dh,&thisFluctuates,1,NULL,0))!=VA_STATUS_SUCCESS) {
+      printf("could not create surface for encoding... %x\n",vaStat);
+      return 1;
+    }
+  
+  if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConf)!=VA_STATUS_SUCCESS) {
+    printf("no videoproc.\n");
+    return 1;
+  }
+  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,&thisFluctuates,1,&scalerC)!=VA_STATUS_SUCCESS) {
+    printf("we can't scale. bullshit\n");
+    return 1;
+  }
+  
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
   extractSource=(AVHWDeviceContext*)wrappedSource->data;
   
@@ -179,15 +238,15 @@ int main(int argc, char** argv) {
   printf("post!\n");
   
   printf("creating encoder\n");
-  if ((encInfo=avcodec_find_encoder_by_name("h264_vaapi"))==NULL) {
+  if ((encInfo=avcodec_find_encoder_by_name("hevc_vaapi"))==NULL) {
     printf("could not find encoder...\n");
     return 1;
   }
   encoder=avcodec_alloc_context3(encInfo);
   encoder->width=dw;
   encoder->height=dh;
-  encoder->time_base=(AVRational){1,1000};
-  encoder->framerate=(AVRational){60,1};
+  encoder->time_base=(AVRational){1,900};
+  //encoder->framerate=(AVRational){1000,1};
   encoder->sample_aspect_ratio=(AVRational){1,1};
   encoder->pix_fmt=AV_PIX_FMT_VAAPI;
   printf("setting hwframe ctx\n");
@@ -200,7 +259,7 @@ int main(int argc, char** argv) {
   hardFrameDataR=av_hwframe_ctx_alloc(ffhardInst);
   ((AVHWFramesContext*)hardFrameDataR->data)->width=dw;
   ((AVHWFramesContext*)hardFrameDataR->data)->height=dh;
-  //((AVHWFramesContext*)hardFrameDataR->data)->initial_pool_size = 200;
+  ((AVHWFramesContext*)hardFrameDataR->data)->initial_pool_size = 32;
   ((AVHWFramesContext*)hardFrameDataR->data)->format=AV_PIX_FMT_VAAPI;
   ((AVHWFramesContext*)hardFrameDataR->data)->sw_format=AV_PIX_FMT_NV12;
   printf("%#lx\n",vaInst);
@@ -209,8 +268,14 @@ int main(int argc, char** argv) {
   
   printf("%#lx\n",vaInst);
   
-  av_dict_set(&encOpt,"qp","25",0);
-  av_dict_set(&encOpt,"compression_level","15",0);
+  av_dict_set(&encOpt,"g","40",0);
+  av_dict_set(&encOpt,"max_b_frames","0",0);  
+  av_dict_set(&encOpt,"q","25",0);
+  
+  /*av_dict_set(&encOpt,"i_qfactor","1",0);
+  av_dict_set(&encOpt,"i_qoffset","10",0);*/
+  
+  //av_dict_set(&encOpt,"compression_level","15",0);
   
   if ((avcodec_open2(encoder,encInfo,&encOpt))<0) {
     printf("could not open encoder :(\n");
@@ -218,22 +283,23 @@ int main(int argc, char** argv) {
   }
   
   // create stream
-  avformat_alloc_output_context2(&out,NULL,NULL,"out.mkv");
+  avformat_alloc_output_context2(&out,NULL,NULL,outname);
   if (out==NULL) {
     printf("couldn't open output...\n");
     return 1;
   }
-  stream=avformat_new_stream(out,NULL);
+  stream=avformat_new_stream(out,encInfo);
   stream->id=0;
-  stream->time_base=(AVRational){1,1000};
+  stream->time_base=(AVRational){1,900};
 
   if (out->oformat->flags&AVFMT_GLOBALHEADER)
         encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
   avcodec_parameters_from_context(stream->codecpar,encoder);
+  //av_dump_format(out,0,outname,1);
 
 if (!(out->oformat->flags & AVFMT_NOFILE)) {
-        if (avio_open(&out->pb, "out.mkv", AVIO_FLAG_WRITE)<0) {
+        if (avio_open(&out->pb, outname, AVIO_FLAG_WRITE)<0) {
           printf("could not open file in avio...\n");
           return 1;
 }
@@ -241,7 +307,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
 
   int retv;
   char e[4096];
-  if (retv=avformat_write_header(out,&badCodingPractice)<0) {
+  if ((retv=avformat_write_header(out,&badCodingPractice))<0) {
     av_make_error_string(e,4095,retv);
     printf("could not write header... %s\n",e);
     return 1;
@@ -258,6 +324,9 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
   
   btime=mkts(0,0);
   
+  hardFrame=av_frame_alloc();
+    av_hwframe_get_buffer(hardFrameDataR,hardFrame,0);
+  
   while (1) {
     vblank.request.sequence=1;
     vblank.request.type=DRM_VBLANK_RELATIVE;
@@ -265,12 +334,16 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     
     //printf("\x1b[2J\x1b[1;1H\n");
     
+    dtime=vtime;
     vtime=curTime(CLOCK_MONOTONIC)-btime;
     if (btime==mkts(0,0)) {
       btime=vtime;
       vtime=mkts(0,0);
     }
-    printf("frame % 8d: %.2ld:%.2ld:%.2ld.%.3ld\n",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000);
+    long int delta=(vtime-dtime).tv_nsec;
+    delta=(int)round((double)1000000000/(double)delta);
+    if (delta==0) delta=1000000000;
+    printf("\x1b[mframe \x1b[1m% 8d\x1b[m: %.2ld:%.2ld:%.2ld.%.3ld. FPS: %s%ld \x1b[m",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,(delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta);
     tStart=curTime(CLOCK_MONOTONIC);
     plane=drmModeGetPlane(fd,planeid);
     if (plane==NULL) {
@@ -357,22 +430,65 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       */
       
       // ENCODE SINGLE-THREAD CODE BEGIN //
-    hardFrame=av_frame_alloc();
-    av_hwframe_get_buffer(hardFrameDataR,hardFrame,0);
-    hardFrame->pts=vtime.tv_sec*1000+vtime.tv_nsec/1000000;
-    printf("pts: %ld\n",hardFrame->pts);
+    
+    hardFrame->pts=((vtime.tv_sec*100000+vtime.tv_nsec/10000)*9)/10;
+    //printf("pts: %ld\n",hardFrame->pts);
 
+    // convert
     massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
     
-    // HACK!
-    encode_write(encoder,hardFrame,out);
+    // HACK sort of!
+    //printf("pointer is %lx and there are a %d\n",massAbbrev->surface_ids,massAbbrev->nb_surfaces);
+    /*massAbbrev->surface_ids=&thisFluctuates;
+    massAbbrev->nb_surfaces=1;*/
+    
+    scaleRegion.x=0;
+    scaleRegion.y=0;
+    scaleRegion.width=dw;
+    scaleRegion.height=dh;
+
+    scaler.surface=surface;
+    scaler.surface_region=0;
+    scaler.surface_color_standard=VAProcColorStandardBT709;
+    scaler.output_region=0;
+    scaler.output_background_color=0xff000000;
+    scaler.output_color_standard=VAProcColorStandardBT709;
+    scaler.pipeline_flags=0;
+    scaler.filter_flags=VA_FILTER_SCALING_HQ;
+    
+    if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[31]))!=VA_STATUS_SUCCESS) {
+      printf("vaBeginPicture fail: %x\n",vaStat);
+      return 1;
+    }
+    if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
+      printf("param buffer creation fail: %x\n",vaStat);
+      return 1;
+    }
+    if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
+      printf("vaRenderPicture fail: %x\n",vaStat);
+      return 1;
+    }
+    if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
+      printf("vaEndPicture fail: %x\n",vaStat);
+      return 1;
+    }
+    if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
+      printf("vaDestroyBuffer fail: %x\n",vaStat);
+      return 1;
+    }
+    
+    encode_write(encoder,hardFrame,out,stream);
 
     // ENCODE SINGLE-THREAD CODE END //
-    av_frame_free(&hardFrame);
+    //av_frame_free(&hardFrame);
+    
 
       if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
         printf("destroy surf error %x\n",vaStat);
       }
+      /*if ((vaStat=vaDestroySurfaces(vaInst,&thisFluctuates,1))!=VA_STATUS_SUCCESS) {
+        printf("destroy encode surf error %x\n",vaStat);
+      }*/
     }
     // RETRIEVE CODE END //
     
@@ -381,7 +497,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     drmModeFreePlane(plane);
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
 tEnd=curTime(CLOCK_MONOTONIC);
-        printf("get time: %s\n",tstos(tEnd-tStart).c_str());
+        printf("%s\n",tstos(tEnd-tStart).c_str());
 
     
     
