@@ -1,5 +1,7 @@
 #include "darmstadt.h"
 
+bool quit;
+
 int fd, primefd;
 
 drmModePlaneRes* planeres;
@@ -119,6 +121,7 @@ int main(int argc, char** argv) {
   struct sigaction saTerm;
   saTerm.sa_handler=handleTerm;
   sigemptyset(&saTerm.sa_mask);
+  quit=false;
   if (argc>1) {
     outname=argv[1];
   }
@@ -319,6 +322,10 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     return 1;
   }
 
+  sigaction(SIGINT,&saTerm,NULL);
+  sigaction(SIGTERM,&saTerm,NULL);
+  sigaction(SIGHUP,&saTerm,NULL);
+
   if (pthread_create(&thr,NULL,unbuff,NULL)<0) {
     printf("could not create encoding thread...\n");
     return 1;
@@ -336,8 +343,8 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
   while (1) {
     vblank.request.sequence=1;
     vblank.request.type=DRM_VBLANK_RELATIVE;
-    drmWaitVBlank(fd,&vblank);
-    
+    if (frame>32) drmWaitVBlank(fd,&vblank);
+   
     //printf("\x1b[2J\x1b[1;1H\n");
     
     dtime=vtime;
@@ -508,8 +515,21 @@ tEnd=curTime(CLOCK_MONOTONIC);
     
     
     frame++;
-    if (false) break;
+    if (quit) break;
   }
+
+  if (av_write_trailer(out)<0) {
+    printf("could not finish file...\n");
+  }
+
+  avio_closep(&out->pb);
+  avformat_free_context(out);
+
+  avcodec_free_context(&encoder);
+  vaDestroyContext(vaInst,scalerC);
+  vaTerminate(vaInst);
+
+  close(fd);
   
   printf("finished.\n");
   return 0;
