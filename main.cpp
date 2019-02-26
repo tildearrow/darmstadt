@@ -110,9 +110,15 @@ end:
     return ret;
 }
 
+void handleTerm(int data) {
+  quit=true;
+}
 
 int main(int argc, char** argv) {
   drmVersionPtr ver;
+  struct sigaction saTerm;
+  saTerm.sa_handler=handleTerm;
+  sigemptyset(&saTerm.sa_mask);
   if (argc>1) {
     outname=argv[1];
   }
