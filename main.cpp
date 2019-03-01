@@ -22,13 +22,16 @@ std::queue<qFrame> frames;
 VADisplay vaInst;
 VASurfaceAttribExternalBuffers vaBD;
 VAContextID scalerC;
+VAContextID copierC;
 VASurfaceID surface;
-VASurfaceID thisFluctuates;
+VASurfaceID portFrame[16];
 VAConfigID vaConf;
 VABufferID scalerBuf;
 VASurfaceAttrib vaAttr[2];
 VAProcPipelineParameterBuffer scaler;
 VARectangle scaleRegion;
+VAProcPipelineParameterBuffer copier;
+VARectangle copyRegion;
 VAImage img;
 VAImageFormat imgFormat;
 VAImageFormat allowedFormats[2048];
@@ -59,6 +62,8 @@ AVStream* stream;
 AVDictionary* badCodingPractice=NULL;
 
 FILE* f;
+
+int speeds[120];
 
 const char* outname="out.ts";
 
@@ -220,7 +225,7 @@ int main(int argc, char** argv) {
     }
   }
   
-  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,dw,dh,&thisFluctuates,1,NULL,0))!=VA_STATUS_SUCCESS) {
+  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,dw,dh,portFrame,16,NULL,0))!=VA_STATUS_SUCCESS) {
       printf("could not create surface for encoding... %x\n",vaStat);
       return 1;
     }
@@ -229,8 +234,12 @@ int main(int argc, char** argv) {
     printf("no videoproc.\n");
     return 1;
   }
-  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,&thisFluctuates,1,&scalerC)!=VA_STATUS_SUCCESS) {
+  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,portFrame,1,&scalerC)!=VA_STATUS_SUCCESS) {
     printf("we can't scale. bullshit\n");
+    return 1;
+  }
+  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,portFrame,1,&copierC)!=VA_STATUS_SUCCESS) {
+    printf("we can't copy, i think. bullshit\n");
     return 1;
   }
   
@@ -326,6 +335,8 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
   sigaction(SIGTERM,&saTerm,NULL);
   sigaction(SIGHUP,&saTerm,NULL);
 
+  memset(speeds,0,sizeof(int)*120);
+
   if (pthread_create(&thr,NULL,unbuff,NULL)<0) {
     printf("could not create encoding thread...\n");
     return 1;
@@ -357,6 +368,9 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     delta=(int)round((double)1000000000/(double)delta);
     if (delta==0) delta=1000000000;
     printf("\x1b[mframe \x1b[1m% 8d\x1b[m: %.2ld:%.2ld:%.2ld.%.3ld. FPS: %s%ld \x1b[m",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,(delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta);
+    if (frame>33 && delta>=0 && delta<120) {
+      speeds[delta]++;
+    }
     tStart=curTime(CLOCK_MONOTONIC);
     plane=drmModeGetPlane(fd,planeid);
     if (plane==NULL) {
@@ -450,11 +464,6 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     // convert
     massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
     
-    // HACK sort of!
-    //printf("pointer is %lx and there are a %d\n",massAbbrev->surface_ids,massAbbrev->nb_surfaces);
-    /*massAbbrev->surface_ids=&thisFluctuates;
-    massAbbrev->nb_surfaces=1;*/
-    
     scaleRegion.x=0;
     scaleRegion.y=0;
     scaleRegion.width=dw;
@@ -499,9 +508,6 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
         printf("destroy surf error %x\n",vaStat);
       }
-      /*if ((vaStat=vaDestroySurfaces(vaInst,&thisFluctuates,1))!=VA_STATUS_SUCCESS) {
-        printf("destroy encode surf error %x\n",vaStat);
-      }*/
     }
     // RETRIEVE CODE END //
     
@@ -526,11 +532,26 @@ tEnd=curTime(CLOCK_MONOTONIC);
   avformat_free_context(out);
 
   avcodec_free_context(&encoder);
+  if ((vaStat=vaDestroySurfaces(vaInst,portFrame,16))!=VA_STATUS_SUCCESS) {
+    printf("destroy portframes error %x\n",vaStat);
+  }
   vaDestroyContext(vaInst,scalerC);
+  vaDestroyContext(vaInst,copierC);
   vaTerminate(vaInst);
 
   close(fd);
   
   printf("finished.\n");
+
+  printf("--FRAME REPORT--\n");
+  if (frame<=33) {
+    printf("too short! can't estimate.\n");
+  } else {
+    for (int i=0; i<120; i++) {
+      if (speeds[i]>0) {
+        printf("%d FPS: %d (%.2f%)\n",i,speeds[i],100.0*((double)speeds[i]/(double)(frame-34)));
+      }
+    }
+  }
   return 0;
 }
