@@ -27,7 +27,9 @@ VASurfaceID surface;
 VASurfaceID portFrame[16];
 VAConfigID vaConf;
 VABufferID scalerBuf;
+VABufferID copierBuf;
 VASurfaceAttrib vaAttr[2];
+VASurfaceAttrib coAttr[2];
 VAProcPipelineParameterBuffer scaler;
 VARectangle scaleRegion;
 VAProcPipelineParameterBuffer copier;
@@ -66,6 +68,8 @@ FILE* f;
 int speeds[120];
 
 const char* outname="out.ts";
+
+SyncMethod syncMethod;
 
 void* unbuff(void* data) {
   qFrame f;
@@ -127,8 +131,12 @@ int main(int argc, char** argv) {
   saTerm.sa_handler=handleTerm;
   sigemptyset(&saTerm.sa_mask);
   quit=false;
+  syncMethod=syncVBlank;
   if (argc>1) {
     outname=argv[1];
+  }
+  if (argc>2) {
+    syncMethod=syncTimer;
   }
   // open card
   fd=open(DEVICE_PATH,O_RDWR);
@@ -225,24 +233,30 @@ int main(int argc, char** argv) {
     }
   }
   
-  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,dw,dh,portFrame,16,NULL,0))!=VA_STATUS_SUCCESS) {
-      printf("could not create surface for encoding... %x\n",vaStat);
-      return 1;
-    }
+  coAttr[0].type=VASurfaceAttribUsageHint;
+  coAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
+  coAttr[0].value.type=VAGenericValueTypeInteger;
+  coAttr[0].value.value.i=VA_SURFACE_ATTRIB_USAGE_HINT_VPP_READ;
+  
+  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,dw,dh,portFrame,1,coAttr,1))!=VA_STATUS_SUCCESS) {
+    printf("could not create surface for encoding... %x\n",vaStat);
+    return 1;
+  }
   
   if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConf)!=VA_STATUS_SUCCESS) {
     printf("no videoproc.\n");
     return 1;
   }
-  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,portFrame,1,&scalerC)!=VA_STATUS_SUCCESS) {
+  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
     printf("we can't scale. bullshit\n");
     return 1;
   }
-  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,portFrame,1,&copierC)!=VA_STATUS_SUCCESS) {
+  /*
+  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,NULL,0,&copierC)!=VA_STATUS_SUCCESS) {
     printf("we can't copy, i think. bullshit\n");
     return 1;
   }
-  
+  */
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
   extractSource=(AVHWDeviceContext*)wrappedSource->data;
   
@@ -346,15 +360,40 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
   
   frame=0;
   
+  struct timespec nextMilestone=mkts(0,0);
+  
   btime=mkts(0,0);
   
   hardFrame=av_frame_alloc();
-    av_hwframe_get_buffer(hardFrameDataR,hardFrame,0);
+  av_hwframe_get_buffer(hardFrameDataR,hardFrame,0);
+  
+  drmVBlankReply vreply;
+  int startSeq;
+  
+  vblank.request.sequence=1;
+  vblank.request.type=DRM_VBLANK_RELATIVE;
+  drmWaitVBlank(fd,&vblank);
+  vreply=vblank.reply;
+  startSeq=vreply.sequence;
+  int recal=0;
   
   while (1) {
-    vblank.request.sequence=1;
-    vblank.request.type=DRM_VBLANK_RELATIVE;
-    if (frame>32) drmWaitVBlank(fd,&vblank);
+    vblank.request.sequence=startSeq+1;
+    vblank.request.type=DRM_VBLANK_ABSOLUTE;
+    
+    if (syncMethod==syncVBlank) {
+      if (frame>32) drmWaitVBlank(fd,&vblank);
+    }
+    vreply=vblank.reply;
+    startSeq++;
+    if ((vblank.reply.sequence-startSeq)>1) {
+      printf("\x1b[1;31mvblank reply: %d current: %d\x1b[m\n",vblank.reply.sequence,startSeq);
+    }
+    if ((vblank.reply.sequence-startSeq)>2) {
+      printf("too far away! recalibrating.\n");
+      startSeq=vreply.sequence;
+      recal++;
+    }
    
     //printf("\x1b[2J\x1b[1;1H\n");
     
@@ -364,10 +403,23 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       btime=vtime;
       vtime=mkts(0,0);
     }
+    // --HACK OF SORTS--
+    // because VBlank isn't working out well for me,
+    // and I seem to be unable to copy a surface to
+    // another, I devised this method as a workaround.
+    // please note this is temporary, and the whole
+    // cache/copy thing still remains in the plan.
+    // I just want Jane to come and make me happy...
+    if (syncMethod==syncTimer) {
+      if (vtime<nextMilestone) continue;
+      nextMilestone=nextMilestone+mkts(0,16666667);
+      while ((vtime-mkts(0,16666667))>nextMilestone) nextMilestone=nextMilestone+mkts(0,16666667);
+    }
     long int delta=(vtime-dtime).tv_nsec;
     delta=(int)round((double)1000000000/(double)delta);
     if (delta==0) delta=1000000000;
     printf("\x1b[mframe \x1b[1m% 8d\x1b[m: %.2ld:%.2ld:%.2ld.%.3ld. FPS: %s%ld \x1b[m",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,(delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta);
+    printf("behind: %s\n",tstos(vtime-nextMilestone).c_str());
     if (frame>33 && delta>=0 && delta<120) {
       speeds[delta]++;
     }
@@ -478,6 +530,8 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     scaler.pipeline_flags=0;
     scaler.filter_flags=VA_FILTER_SCALING_HQ;
     
+    printf("source: %d destina: %d\n",portFrame[0],massAbbrev->surface_ids[31]);
+    
     if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[31]))!=VA_STATUS_SUCCESS) {
       printf("vaBeginPicture fail: %x\n",vaStat);
       return 1;
@@ -498,6 +552,61 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       printf("vaDestroyBuffer fail: %x\n",vaStat);
       return 1;
     }
+    /*
+    VASurfaceStatus fuckPointers=VASurfaceRendering;
+    if (vaQuerySurfaceStatus(vaInst,portFrame[0],&fuckPointers)!=VA_STATUS_SUCCESS) {
+      printf("FFFFFFUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUCK\n");
+      return 2;
+    }
+    if (fuckPointers&VASurfaceRendering) {
+      printf("RENDERING\n");
+    }
+    if (fuckPointers&VASurfaceDisplaying) {
+      printf("DISPLAYING\n");
+    }
+    if (fuckPointers&VASurfaceReady) {
+      printf("READY!\n");
+    }
+    if (fuckPointers&VASurfaceSkipped) {
+      printf("SKIPPED\n");
+    }
+    
+    // NON-THREADED CODE!
+    copyRegion.x=0;
+    copyRegion.y=0;
+    copyRegion.width=dw;
+    copyRegion.height=dh;
+
+    copier.surface=portFrame[0];
+    copier.surface_region=0;
+    copier.surface_color_standard=VAProcColorStandardBT709;
+    copier.output_region=0;
+    copier.output_background_color=0xff000000;
+    copier.output_color_standard=VAProcColorStandardBT709;
+    copier.pipeline_flags=0;
+    copier.filter_flags=VA_FILTER_SCALING_FAST;
+    
+    if ((vaStat=vaBeginPicture(vaInst,copierC,massAbbrev->surface_ids[31]))!=VA_STATUS_SUCCESS) {
+      printf("copy vaBeginPicture fail: %x\n",vaStat);
+      return 1;
+    }
+    if ((vaStat=vaCreateBuffer(vaInst,copierC,VAProcPipelineParameterBufferType,sizeof(copier),1,&copier,&copierBuf))!=VA_STATUS_SUCCESS) {
+      printf("copy param buffer creation fail: %x\n",vaStat);
+      return 1;
+    }
+    printf("source: %d destina: %d buf %d\n",copier.surface,massAbbrev->surface_ids[31],copierBuf);
+    if ((vaStat=vaRenderPicture(vaInst,copierC,&copierBuf,1))!=VA_STATUS_SUCCESS) {
+      printf("copy vaRenderPicture fail: %x\n",vaStat);
+      return 1;
+    }
+    if ((vaStat=vaEndPicture(vaInst,copierC))!=VA_STATUS_SUCCESS) {
+      printf("copy vaEndPicture fail: %x\n",vaStat);
+      return 1;
+    }
+    if ((vaStat=vaDestroyBuffer(vaInst,copierBuf))!=VA_STATUS_SUCCESS) {
+      printf("vaDestroyBuffer fail: %x\n",vaStat);
+      return 1;
+    }*/
     
     encode_write(encoder,hardFrame,out,stream);
 
@@ -532,11 +641,11 @@ tEnd=curTime(CLOCK_MONOTONIC);
   avformat_free_context(out);
 
   avcodec_free_context(&encoder);
-  if ((vaStat=vaDestroySurfaces(vaInst,portFrame,16))!=VA_STATUS_SUCCESS) {
-    printf("destroy portframes error %x\n",vaStat);
-  }
   vaDestroyContext(vaInst,scalerC);
   vaDestroyContext(vaInst,copierC);
+  if ((vaStat=vaDestroySurfaces(vaInst,portFrame,1))!=VA_STATUS_SUCCESS) {
+    printf("destroy portframes error %x\n",vaStat);
+  }
   vaTerminate(vaInst);
 
   close(fd);
@@ -553,5 +662,6 @@ tEnd=curTime(CLOCK_MONOTONIC);
       }
     }
   }
+  printf("times we had to recalibrate: %d\n",recal);
   return 0;
 }

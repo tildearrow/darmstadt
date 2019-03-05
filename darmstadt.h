@@ -39,6 +39,11 @@ struct timespec stots(string s);
 string tstos(struct timespec ts);
 struct timespec curTime(clockid_t clockSource);
 
+enum SyncMethod {
+  syncVBlank=0,
+  syncTimer
+};
+
 struct qFrame {
   long fd;
   unsigned int format, pitch;
