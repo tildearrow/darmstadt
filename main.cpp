@@ -377,6 +377,8 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
   startSeq=vreply.sequence;
   int recal=0;
   
+  printf("\x1b[?1049h\x1b[2J\n");
+  
   while (1) {
     vblank.request.sequence=startSeq+1;
     vblank.request.type=DRM_VBLANK_ABSOLUTE;
@@ -410,6 +412,10 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     // please note this is temporary, and the whole
     // cache/copy thing still remains in the plan.
     // I just want Jane to come and make me happy...
+    //
+    // WAIT! why is this method still here? the
+    // superior "absolute" approach is in place!
+    printf("\x1b[1;1H\x1b[1;36m~> DARMSTADT <~\x1b[m\n");
     if (syncMethod==syncTimer) {
       if (vtime<nextMilestone) continue;
       nextMilestone=nextMilestone+mkts(0,16666667);
@@ -418,8 +424,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     long int delta=(vtime-dtime).tv_nsec;
     delta=(int)round((double)1000000000/(double)delta);
     if (delta==0) delta=1000000000;
-    printf("\x1b[mframe \x1b[1m% 8d\x1b[m: %.2ld:%.2ld:%.2ld.%.3ld. FPS: %s%ld \x1b[m",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,(delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta);
-    printf("behind: %s\n",tstos(vtime-nextMilestone).c_str());
+    printf("\x1b[30;1H\x1b[2K\x1b[mframe \x1b[1m% 8d\x1b[m: %.2ld:%.2ld:%.2ld.%.3ld. FPS: %s%ld \x1b[m\x1b[29;1H\n",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,(delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta);
     if (frame>33 && delta>=0 && delta<120) {
       speeds[delta]++;
     }
@@ -529,9 +534,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     scaler.output_color_standard=VAProcColorStandardBT709;
     scaler.pipeline_flags=0;
     scaler.filter_flags=VA_FILTER_SCALING_HQ;
-    
-    printf("source: %d destina: %d\n",portFrame[0],massAbbrev->surface_ids[31]);
-    
+
     if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[31]))!=VA_STATUS_SUCCESS) {
       printf("vaBeginPicture fail: %x\n",vaStat);
       return 1;
@@ -625,13 +628,15 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     drmModeFreePlane(plane);
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
 tEnd=curTime(CLOCK_MONOTONIC);
-        printf("%s\n",tstos(tEnd-tStart).c_str());
+        //printf("%s\n",tstos(tEnd-tStart).c_str());
 
     
     
     frame++;
     if (quit) break;
   }
+  
+  printf("\x1b[?1049l\n");
 
   if (av_write_trailer(out)<0) {
     printf("could not finish file...\n");
