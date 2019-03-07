@@ -383,15 +383,13 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     vblank.request.sequence=startSeq+1;
     vblank.request.type=DRM_VBLANK_ABSOLUTE;
     
-    if (syncMethod==syncVBlank) {
-      if (frame>32) drmWaitVBlank(fd,&vblank);
-    }
+    drmWaitVBlank(fd,&vblank);
     vreply=vblank.reply;
     startSeq++;
     if ((vblank.reply.sequence-startSeq)>1) {
       printf("\x1b[1;31mvblank reply: %d current: %d\x1b[m\n",vblank.reply.sequence,startSeq);
     }
-    if ((vblank.reply.sequence-startSeq)>2) {
+    if ((vblank.reply.sequence-startSeq)>1) {
       printf("too far away! recalibrating.\n");
       startSeq=vreply.sequence;
       recal++;
@@ -400,7 +398,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     //printf("\x1b[2J\x1b[1;1H\n");
     
     dtime=vtime;
-    vtime=curTime(CLOCK_MONOTONIC)-btime;
+    vtime=mkts(vreply.tval_sec,vreply.tval_usec*1000)-btime;
     if (btime==mkts(0,0)) {
       btime=vtime;
       vtime=mkts(0,0);
@@ -415,7 +413,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     //
     // WAIT! why is this method still here? the
     // superior "absolute" approach is in place!
-    printf("\x1b[1;1H\x1b[1;36m~> DARMSTADT <~\x1b[m\n");
+    printf("\x1b[1;48H\x1b[1;33m~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[1;33m <~\x1b[m\n");
     if (syncMethod==syncTimer) {
       if (vtime<nextMilestone) continue;
       nextMilestone=nextMilestone+mkts(0,16666667);

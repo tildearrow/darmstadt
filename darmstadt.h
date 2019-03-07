@@ -25,6 +25,8 @@ extern "C" {
 
 #define DEVICE_PATH "/dev/dri/card0"
 
+#define DARM_VERSION "v1.0"
+
 typedef std::string string;
 
 bool operator ==(const struct timespec& l, const struct timespec& r);
