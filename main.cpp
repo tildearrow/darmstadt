@@ -387,10 +387,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     vreply=vblank.reply;
     startSeq++;
     if ((vblank.reply.sequence-startSeq)>1) {
-      printf("\x1b[1;31mvblank reply: %d current: %d\x1b[m\n",vblank.reply.sequence,startSeq);
-    }
-    if ((vblank.reply.sequence-startSeq)>1) {
-      printf("too far away! recalibrating.\n");
+      printf("\x1b[1;31m%d: too far away! recalibrating. (%d)\x1b[m\n",frame,recal+1);
       startSeq=vreply.sequence;
       recal++;
     }
