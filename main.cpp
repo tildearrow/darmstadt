@@ -14,6 +14,8 @@ unsigned int planeid;
 int frame;
 struct timespec btime, vtime, dtime;
 
+struct timespec wtStart, wtEnd;
+
 int dw, dh;
 
 pthread_t thr;
@@ -109,11 +111,16 @@ static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *
         enc_pkt.stream_index = 0;
         str->cur_dts = frame->pts-1;
         enc_pkt.pts = frame->pts;
+        wtStart=curTime(CLOCK_MONOTONIC);
         if (av_write_frame(fout,&enc_pkt)<0) {
           printf("unable to write frame");
 }
         avformat_flush(fout);
         avio_flush(fout->pb);
+        wtEnd=curTime(CLOCK_MONOTONIC);
+        if ((wtEnd-wtStart)>mkts(0,16666667)) {
+          printf("\x1b[1;32mWARNING! write took too long :( (%dµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+        }
         av_packet_unref(&enc_pkt);
     }
 end:
@@ -302,7 +309,7 @@ int main(int argc, char** argv) {
   
   av_dict_set(&encOpt,"g","40",0);
   av_dict_set(&encOpt,"max_b_frames","0",0);  
-  av_dict_set(&encOpt,"q","25",0);
+  av_dict_set(&encOpt,"q","27",0);
   
   /*av_dict_set(&encOpt,"i_qfactor","1",0);
   av_dict_set(&encOpt,"i_qoffset","10",0);*/

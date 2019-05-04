@@ -23,7 +23,7 @@ extern "C" {
   #include <libavutil/hwcontext_vaapi.h>
 }
 
-#define DEVICE_PATH "/dev/dri/card0"
+#define DEVICE_PATH "/dev/dri/card1"
 
 #define DARM_VERSION "v1.0"
 
