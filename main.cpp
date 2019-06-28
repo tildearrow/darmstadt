@@ -216,7 +216,6 @@ int main(int argc, char** argv) {
   if (planeres) drmModeFreePlaneResources(planeres);
   if (plane) drmModeFreePlane(plane);
   if (fb) drmModeFreeFB(fb);
-  primefd=-1;
   
   vaInst=vaGetDisplayDRM(fd);
   if (!vaDisplayIsValid(vaInst)) {
@@ -432,7 +431,6 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       speeds[delta]++;
     }
     tStart=curTime(CLOCK_MONOTONIC);
-    if (primefd<0) {
     plane=drmModeGetPlane(fd,planeid);
     if (plane==NULL) {
       printf("plane crash\n");
@@ -455,7 +453,6 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
       printf("couldn't turn handle to FD :(\n");
       break;
-    }
     }
     //printf("prime FD: %d\n",primefd);
     
@@ -628,9 +625,9 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     }
     // RETRIEVE CODE END //
     
-    //close(primefd);
-    //drmModeFreeFB(fb);
-    //drmModeFreePlane(plane);
+    close(primefd);
+    drmModeFreeFB(fb);
+    drmModeFreePlane(plane);
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
 tEnd=curTime(CLOCK_MONOTONIC);
         //printf("%s\n",tstos(tEnd-tStart).c_str());
