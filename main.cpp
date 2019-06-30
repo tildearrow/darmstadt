@@ -398,6 +398,10 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       startSeq=vreply.sequence;
       recal++;
     }
+    
+    if ((curTime(CLOCK_MONOTONIC))<mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)) {
+      usleep(1000);
+    }
    
     //printf("\x1b[2J\x1b[1;1H\n");
     
@@ -484,36 +488,6 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
         printf("no surface sync %x\n",vaStat);
       }
-      /*
-      if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
-        printf("could not create image... %x\n",vaStat);
-      } else {
-        //printf("size: %d\n",img.data_size);
-        
-        if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
-          printf("bullshit %x\n",vaStat);
-          exit(1);
-        }
-        
-        if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
-          printf("oh come on! %x\n",vaStat);
-        } else {
-          // read a pixel
-          //printf("addr: %.16lx\n",addr);
-          for (int i=0; i<128; i++) {
-            printf("%.2x",addr[3840*4*900+800*4+i]);
-          }
-          printf("\n");
-          if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
-            printf("could not unmap buffer: %x...\n",vaStat);
-          }
-          addr=NULL;
-        }
-        if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
-          printf("destroy image error %x\n",vaStat);
-        }
-      }
-      */
       
       // ENCODE SINGLE-THREAD CODE BEGIN //
     
@@ -557,61 +531,6 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       printf("vaDestroyBuffer fail: %x\n",vaStat);
       return 1;
     }
-    /*
-    VASurfaceStatus fuckPointers=VASurfaceRendering;
-    if (vaQuerySurfaceStatus(vaInst,portFrame[0],&fuckPointers)!=VA_STATUS_SUCCESS) {
-      printf("FFFFFFUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUCK\n");
-      return 2;
-    }
-    if (fuckPointers&VASurfaceRendering) {
-      printf("RENDERING\n");
-    }
-    if (fuckPointers&VASurfaceDisplaying) {
-      printf("DISPLAYING\n");
-    }
-    if (fuckPointers&VASurfaceReady) {
-      printf("READY!\n");
-    }
-    if (fuckPointers&VASurfaceSkipped) {
-      printf("SKIPPED\n");
-    }
-    
-    // NON-THREADED CODE!
-    copyRegion.x=0;
-    copyRegion.y=0;
-    copyRegion.width=dw;
-    copyRegion.height=dh;
-
-    copier.surface=portFrame[0];
-    copier.surface_region=0;
-    copier.surface_color_standard=VAProcColorStandardBT709;
-    copier.output_region=0;
-    copier.output_background_color=0xff000000;
-    copier.output_color_standard=VAProcColorStandardBT709;
-    copier.pipeline_flags=0;
-    copier.filter_flags=VA_FILTER_SCALING_FAST;
-    
-    if ((vaStat=vaBeginPicture(vaInst,copierC,massAbbrev->surface_ids[31]))!=VA_STATUS_SUCCESS) {
-      printf("copy vaBeginPicture fail: %x\n",vaStat);
-      return 1;
-    }
-    if ((vaStat=vaCreateBuffer(vaInst,copierC,VAProcPipelineParameterBufferType,sizeof(copier),1,&copier,&copierBuf))!=VA_STATUS_SUCCESS) {
-      printf("copy param buffer creation fail: %x\n",vaStat);
-      return 1;
-    }
-    printf("source: %d destina: %d buf %d\n",copier.surface,massAbbrev->surface_ids[31],copierBuf);
-    if ((vaStat=vaRenderPicture(vaInst,copierC,&copierBuf,1))!=VA_STATUS_SUCCESS) {
-      printf("copy vaRenderPicture fail: %x\n",vaStat);
-      return 1;
-    }
-    if ((vaStat=vaEndPicture(vaInst,copierC))!=VA_STATUS_SUCCESS) {
-      printf("copy vaEndPicture fail: %x\n",vaStat);
-      return 1;
-    }
-    if ((vaStat=vaDestroyBuffer(vaInst,copierBuf))!=VA_STATUS_SUCCESS) {
-      printf("vaDestroyBuffer fail: %x\n",vaStat);
-      return 1;
-    }*/
     
     encode_write(encoder,hardFrame,out,stream);
 
