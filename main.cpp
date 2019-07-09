@@ -43,7 +43,7 @@ int allowedFormatsSize;
 int theFormat;
 int vaStat;
 
-int fuck, shit;
+int discvar1, discvar2;
 
 unsigned char* addr;
 unsigned long portedFD;
@@ -222,7 +222,7 @@ int main(int argc, char** argv) {
     printf("could not open VA-API...\n");
     return 1;
   }
-  if (vaInitialize(vaInst,&fuck,&shit)!=VA_STATUS_SUCCESS) {
+  if (vaInitialize(vaInst,&discvar1,&discvar2)!=VA_STATUS_SUCCESS) {
     printf("could not initialize VA-API...\n");
     return 1;
   }
@@ -255,12 +255,12 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
-    printf("we can't scale. bullshit\n");
+    printf("we can't scale...\n");
     return 1;
   }
   /*
   if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,NULL,0,&copierC)!=VA_STATUS_SUCCESS) {
-    printf("we can't copy, i think. bullshit\n");
+    printf("we can't copy, i think...\n");
     return 1;
   }
   */
@@ -402,6 +402,8 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     if ((curTime(CLOCK_MONOTONIC))<mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)) {
       usleep(1000);
     }
+
+    printf("VBlankOff: % 5dµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)).tv_nsec/1000);
    
     //printf("\x1b[2J\x1b[1;1H\n");
     
