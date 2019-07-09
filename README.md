@@ -13,6 +13,8 @@ the purpose of this program is to alleviate some issues with FFmpeg when trying 
 
 # warning
 
+**this does not record audio.**
+
 no, this is not complete yet or tested on an environment that is not my Vega FE. sorry.
 maybe it can work on your setup, but is very doubtful. if it does however, please tell me.
 
