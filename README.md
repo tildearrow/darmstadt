@@ -1,6 +1,6 @@
 # darmstadt
 
-this is an experimental full-hardware screen recorder for VA-API compatible cards (Intel and AMD).
+this is an experimental Linux full-hardware screen recorder for AMD cards.
 
 the purpose of this program is to alleviate some issues with FFmpeg when trying to record using kmsgrab and the hardware encoder (such as stutter).
 
