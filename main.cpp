@@ -399,11 +399,13 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       recal++;
     }
     
-    if ((curTime(CLOCK_MONOTONIC))<mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)) {
-      usleep(1000);
+    printf("PRE: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
+    
+    while ((curTime(CLOCK_MONOTONIC))<mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)) {
+      usleep(2000);
     }
 
-    printf("VBlankOff: % 5dµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)).tv_nsec/1000);
+    printf("POST: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
    
     //printf("\x1b[2J\x1b[1;1H\n");
     
@@ -421,9 +423,14 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     // cache/copy thing still remains in the plan.
     // I just want Jane to come and make me happy...
     //
+    // OK, SO, PLEASE, REITERATE THE PREVIOUS COMMENT
+    // AS MUCH AS YOU CAN!!!
+    //
     // WAIT! why is this method still here? the
     // superior "absolute" approach is in place!
-    printf("\x1b[1;48H\x1b[1;33m~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[1;33m <~\x1b[m\n");
+    int darmStringSize=strlen("~> DARMSTADT " DARM_VERSION "<~");
+    // 112 BEING TERMINAL WIDTH
+    printf("\x1b[1;%dH\x1b[1;33m~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[1;33m <~\x1b[m\n",(112-darmStringSize)/2);
     if (syncMethod==syncTimer) {
       if (vtime<nextMilestone) continue;
       nextMilestone=nextMilestone+mkts(0,16666667);

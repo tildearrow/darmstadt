@@ -6,6 +6,10 @@ struct timespec mkts(time_t sec, long nsec) {
   struct timespec ret;
   ret.tv_sec=sec;
   ret.tv_nsec=nsec;
+  while (ret.tv_nsec>1000000000) {
+    ret.tv_sec++;
+    ret.tv_nsec-=1000000000;
+  }
   return ret;
 }
 
