@@ -86,7 +86,6 @@ void* cacheThread(void* data) {
     if (wbReadPos!=safeWritePos) {
       if (safeWritePos<wbReadPos) {
         // ring buffer crossed
-        printf("OWTF: %ld must be written. but we are writing: %ld!!!\n\n",DARM_WRITEBUF_SIZE+safeWritePos-wbReadPos,DARM_WRITEBUF_SIZE-wbReadPos+safeWritePos);
         fwrite(writeBuf+wbReadPos,1,DARM_WRITEBUF_SIZE-wbReadPos,f);
         fwrite(writeBuf,1,safeWritePos,f);
       } else {
