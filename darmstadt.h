@@ -25,7 +25,7 @@ extern "C" {
 
 #define DEVICE_PATH "/dev/dri/card1"
 
-#define DARM_VERSION "v1.1.1"
+#define DARM_VERSION "v1.2pre"
 
 typedef std::string string;
 

@@ -63,7 +63,13 @@ AVDictionary* encOpt;
 AVFormatContext* out;
 AVStream* stream;
 
+#define DARM_WRITEBUF_SIZE (1L<<24)
+#define DARM_AVIO_BUFSIZE 131072
+char* writeBuf;
+int wbReadPos, wbWritePos;
+
 AVDictionary* badCodingPractice=NULL;
+void* badCodingPractice1;
 
 FILE* f;
 
@@ -72,6 +78,67 @@ int speeds[120];
 const char* outname="out.ts";
 
 SyncMethod syncMethod;
+
+void* cacheThread(void* data) {
+  int safeWritePos;
+  while (1) {
+    safeWritePos=wbWritePos;
+    if (wbReadPos!=safeWritePos) {
+      if (safeWritePos<wbReadPos) {
+        // ring buffer crossed
+        printf("OWTF: %ld must be written. but we are writing: %ld!!!\n\n",DARM_WRITEBUF_SIZE+safeWritePos-wbReadPos,DARM_WRITEBUF_SIZE-wbReadPos+safeWritePos);
+        fwrite(writeBuf+wbReadPos,1,DARM_WRITEBUF_SIZE-wbReadPos,f);
+        fwrite(writeBuf,1,safeWritePos,f);
+      } else {
+        //printf("WTF\n");
+        fwrite(writeBuf+wbReadPos,1,safeWritePos-wbReadPos,f);
+      }
+    }
+    wbReadPos=safeWritePos;
+    usleep(50000);
+    if (quit) break;
+  }
+  // write remaining
+  safeWritePos=wbWritePos;
+  if (wbReadPos!=safeWritePos) {
+    if (safeWritePos<wbReadPos) {
+      // ring buffer crossed
+      printf("OWTF\n");
+      fwrite(writeBuf+wbReadPos,1,DARM_WRITEBUF_SIZE-wbReadPos,f);
+      fwrite(writeBuf,1,safeWritePos,f);
+    } else {
+      //printf("WTF\n");
+      fwrite(writeBuf+wbReadPos,1,safeWritePos-wbReadPos,f);
+    }
+  }
+  wbReadPos=safeWritePos;
+  
+  return NULL;
+}
+
+int writeToCache(void* data, unsigned char* buf, int size) {
+  //printf("\x1b[35mwriting, %d bytes.\x1b[m\n",size);
+  if ((wbWritePos+size)>(DARM_WRITEBUF_SIZE-1)) {
+    // ring buffer
+    memcpy(writeBuf+wbWritePos,buf,(DARM_WRITEBUF_SIZE)-wbWritePos);
+    memcpy(writeBuf,buf+((DARM_WRITEBUF_SIZE)-wbWritePos),(wbWritePos+size)-(DARM_WRITEBUF_SIZE));
+  } else {
+    memcpy(writeBuf+wbWritePos,buf,size);
+  }
+  wbWritePos+=size;
+  wbWritePos&=DARM_WRITEBUF_SIZE-1;
+  //printf("BufPos: %x\n",wbWritePos);
+  return size;
+}
+
+int64_t seekCache(void* data, int64_t off, int whence) {
+  // flush cache, then seek on file.
+  printf("\x1b[1;35mSEEKING, %ld\x1b[m\n\n",off);
+  if (whence == AVSEEK_SIZE) {
+    return -1;
+  }
+  return off;
+}
 
 void* unbuff(void* data) {
   qFrame f;
@@ -336,13 +403,18 @@ int main(int argc, char** argv) {
 
   avcodec_parameters_from_context(stream->codecpar,encoder);
   //av_dump_format(out,0,outname,1);
+  
+  if ((f=fopen(outname,"wb"))==NULL) {
+    perror("could not open output file");
+    return 1;
+  }
 
-if (!(out->oformat->flags & AVFMT_NOFILE)) {
-        if (avio_open(&out->pb, outname, AVIO_FLAG_WRITE)<0) {
-          printf("could not open file in avio...\n");
-          return 1;
-}
-    }
+  writeBuf=new char[DARM_WRITEBUF_SIZE];
+  if (!(out->oformat->flags & AVFMT_NOFILE)) {
+    unsigned char* ioBuffer=(unsigned char*)av_malloc(DARM_AVIO_BUFSIZE+AV_INPUT_BUFFER_PADDING_SIZE);
+    AVIOContext* avioContext=avio_alloc_context(ioBuffer,DARM_AVIO_BUFSIZE,1,(void*)(f),NULL, &writeToCache,&seekCache);
+    out->pb=avioContext;
+  }
 
   int retv;
   char e[4096];
@@ -357,8 +429,11 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
   sigaction(SIGHUP,&saTerm,NULL);
 
   memset(speeds,0,sizeof(int)*120);
+  
+  wbReadPos=0;
+  wbWritePos=0;
 
-  if (pthread_create(&thr,NULL,unbuff,NULL)<0) {
+  if (pthread_create(&thr,NULL,cacheThread,NULL)<0) {
     printf("could not create encoding thread...\n");
     return 1;
   }
@@ -384,7 +459,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
   startSeq=vreply.sequence;
   int recal=0;
   
-  printf("\x1b[?1049h\x1b[2J\n");
+  //printf("\x1b[?1049h\x1b[2J\n");
   
   while (1) {
     vblank.request.sequence=startSeq+1;
@@ -399,13 +474,13 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
       recal++;
     }
     
-    printf("PRE: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
+    //printf("PRE: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
     
     while ((curTime(CLOCK_MONOTONIC))<mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)) {
       usleep(2000);
     }
 
-    printf("POST: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
+    //printf("POST: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
    
     //printf("\x1b[2J\x1b[1;1H\n");
     
@@ -439,7 +514,7 @@ if (!(out->oformat->flags & AVFMT_NOFILE)) {
     long int delta=(vtime-dtime).tv_nsec;
     delta=(int)round((double)1000000000/(double)delta);
     if (delta==0) delta=1000000000;
-    printf("\x1b[30;1H\x1b[2K\x1b[mframe \x1b[1m% 8d\x1b[m: %.2ld:%.2ld:%.2ld.%.3ld. FPS: %s%ld \x1b[m\x1b[29;1H\n",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,(delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta);
+    printf("\x1b[30;1H\x1b[2K\x1b[mframe \x1b[1m% 8d\x1b[m: %.2ld:%.2ld:%.2ld.%.3ld. FPS: %s%ld  queue: %dK\x1b[m\x1b[29;1H\n",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,(delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta,(wbWritePos-wbReadPos)/1024);
     if (frame>33 && delta>=0 && delta<120) {
       speeds[delta]++;
     }
@@ -566,13 +641,17 @@ tEnd=curTime(CLOCK_MONOTONIC);
     if (quit) break;
   }
   
-  printf("\x1b[?1049l\n");
+  //printf("\x1b[?1049l\n");
 
   if (av_write_trailer(out)<0) {
     printf("could not finish file...\n");
   }
+  
+  printf("finishing output...\n");
+  pthread_join(thr,&badCodingPractice1);
 
-  avio_closep(&out->pb);
+  av_free(out->pb->buffer);
+  fclose(f);
   avformat_free_context(out);
 
   avcodec_free_context(&encoder);
