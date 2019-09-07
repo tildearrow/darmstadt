@@ -8,11 +8,11 @@
 
 - adds 1ms of delay to vblank interval to achieve frame perfection
 
-# roadmap
-
 ## v1.2
 
 - write cache for even more perfect frames
+
+# roadmap
 
 ## v2.0
 
