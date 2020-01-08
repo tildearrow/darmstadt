@@ -67,6 +67,8 @@ AVStream* stream;
 #define DARM_AVIO_BUFSIZE 131072
 char* writeBuf;
 int wbReadPos, wbWritePos;
+long int totalWritten, bitRate, bitRatePre;
+struct timespec brTime;
 
 AVDictionary* badCodingPractice=NULL;
 void* badCodingPractice1;
@@ -79,6 +81,8 @@ const char* outname="out.ts";
 
 SyncMethod syncMethod;
 
+struct winsize winSize;
+
 void* cacheThread(void* data) {
   int safeWritePos;
   while (1) {
@@ -89,7 +93,6 @@ void* cacheThread(void* data) {
         fwrite(writeBuf+wbReadPos,1,DARM_WRITEBUF_SIZE-wbReadPos,f);
         fwrite(writeBuf,1,safeWritePos,f);
       } else {
-        //printf("WTF\n");
         fwrite(writeBuf+wbReadPos,1,safeWritePos-wbReadPos,f);
       }
     }
@@ -102,7 +105,7 @@ void* cacheThread(void* data) {
   if (wbReadPos!=safeWritePos) {
     if (safeWritePos<wbReadPos) {
       // ring buffer crossed
-      printf("OWTF\n");
+      printf("WARNING: writebuf crossed\n");
       fwrite(writeBuf+wbReadPos,1,DARM_WRITEBUF_SIZE-wbReadPos,f);
       fwrite(writeBuf,1,safeWritePos,f);
     } else {
@@ -127,6 +130,13 @@ int writeToCache(void* data, unsigned char* buf, int size) {
   wbWritePos+=size;
   wbWritePos&=DARM_WRITEBUF_SIZE-1;
   //printf("BufPos: %x\n",wbWritePos);
+  totalWritten+=size;
+  bitRatePre+=size;
+  if ((curTime(CLOCK_MONOTONIC)-brTime)>mkts(0,250000000)) {
+    brTime=curTime(CLOCK_MONOTONIC);
+    bitRate=bitRatePre*4*8;
+    bitRatePre=0;
+  }
   return size;
 }
 
@@ -198,13 +208,24 @@ void handleTerm(int data) {
   quit=true;
 }
 
+void handleWinCh(int data) {
+  ioctl(1,TIOCGWINSZ,&winSize);
+}
+
 int main(int argc, char** argv) {
   drmVersionPtr ver;
   struct sigaction saTerm;
+  struct sigaction saWinCh;
   saTerm.sa_handler=handleTerm;
+  saWinCh.sa_handler=handleWinCh;
   sigemptyset(&saTerm.sa_mask);
+  sigemptyset(&saWinCh.sa_mask);
   quit=false;
   syncMethod=syncVBlank;
+  totalWritten=0;
+  bitRate=0;
+  bitRatePre=0;
+  brTime=curTime(CLOCK_MONOTONIC);
   if (argc>1) {
     outname=argv[1];
   }
@@ -273,7 +294,7 @@ int main(int argc, char** argv) {
   
   if (!fb->handle) {
     printf("setcap cap_sys_admin=ep\n");
-    return 1;
+    return 2;
   }
   
   dw=fb->width;
@@ -374,8 +395,8 @@ int main(int argc, char** argv) {
   printf("%#lx\n",vaInst);
   
   av_dict_set(&encOpt,"g","40",0);
-  av_dict_set(&encOpt,"max_b_frames","0",0);  
-  av_dict_set(&encOpt,"q","28",0);
+  av_dict_set(&encOpt,"max_b_frames","0",0);
+  av_dict_set(&encOpt,"qp","25",0);
   
   /*av_dict_set(&encOpt,"i_qfactor","1",0);
   av_dict_set(&encOpt,"i_qoffset","10",0);*/
@@ -426,6 +447,8 @@ int main(int argc, char** argv) {
   sigaction(SIGINT,&saTerm,NULL);
   sigaction(SIGTERM,&saTerm,NULL);
   sigaction(SIGHUP,&saTerm,NULL);
+  
+  sigaction(SIGWINCH,&saWinCh,NULL);
 
   memset(speeds,0,sizeof(int)*120);
   
@@ -458,8 +481,9 @@ int main(int argc, char** argv) {
   startSeq=vreply.sequence;
   int recal=0;
   
-  //printf("\x1b[?1049h\x1b[2J\n");
+  printf("\x1b[?1049h\x1b[2J\n");
   
+  ioctl(1,TIOCGWINSZ,&winSize);
   while (1) {
     vblank.request.sequence=startSeq+1;
     vblank.request.type=DRM_VBLANK_ABSOLUTE;
@@ -500,11 +524,13 @@ int main(int argc, char** argv) {
     // OK, SO, PLEASE, REITERATE THE PREVIOUS COMMENT
     // AS MUCH AS YOU CAN!!!
     //
+    // OK, so, please, ignore the above comment.
+    // the brightness is somewhere else.
+    //
     // WAIT! why is this method still here? the
     // superior "absolute" approach is in place!
     int darmStringSize=strlen("~> DARMSTADT " DARM_VERSION "<~");
-    // 112 BEING TERMINAL WIDTH
-    printf("\x1b[1;%dH\x1b[1;33m~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[1;33m <~\x1b[m\n",(112-darmStringSize)/2);
+    printf("\x1b[1;%dH\x1b[1;33m~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[1;33m <~\x1b[m\n",(winSize.ws_col-darmStringSize)/2);
     if (syncMethod==syncTimer) {
       if (vtime<nextMilestone) continue;
       nextMilestone=nextMilestone+mkts(0,16666667);
@@ -513,7 +539,43 @@ int main(int argc, char** argv) {
     long int delta=(vtime-dtime).tv_nsec;
     delta=(int)round((double)1000000000/(double)delta);
     if (delta==0) delta=1000000000;
-    printf("\x1b[30;1H\x1b[2K\x1b[mframe \x1b[1m% 8d\x1b[m: %.2ld:%.2ld:%.2ld.%.3ld. FPS: %s%ld  queue: %dK\x1b[m\x1b[29;1H\n",frame,vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,(delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta,(wbWritePos-wbReadPos)/1024);
+    
+    // >>> STATUS LINE <<<
+    printf(
+      // begin
+      "\x1b[%d;1H\x1b[2K\x1b[m"
+      // frame
+      "frame \x1b[1m% 8d\x1b[m: "
+      // time
+      "%.2ld:%.2ld:%.2ld.%.3ld. "
+      // FPS
+      "FPS: %s%ld "
+      // queue
+      "\x1b[mqueue: \x1b[1m%5dK "
+      // bitrate
+      "\x1b[mrate: %s%6dKbit "
+      // size
+      "\x1b[msize: \x1b[1m%dM"
+      // end
+      "\x1b[m\x1b[%d;1H\n",
+      
+      // ARGUMENTS
+      winSize.ws_row,
+      // frame
+      frame,
+      // time
+      vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,
+      // FPS
+      (delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta,
+      // queue
+      (wbWritePos-wbReadPos)>>10,
+      // bitrate
+      (bitRate>=30000000)?("\x1b[1;33m"):("\x1b[1;32m"),bitRate>>10,
+      // size
+      totalWritten>>20,
+      // end
+      winSize.ws_row-1);
+    
     if (frame>33 && delta>=0 && delta<120) {
       speeds[delta]++;
     }
@@ -640,7 +702,7 @@ tEnd=curTime(CLOCK_MONOTONIC);
     if (quit) break;
   }
   
-  //printf("\x1b[?1049l\n");
+  printf("\x1b[?1049l\n");
 
   if (av_write_trailer(out)<0) {
     printf("could not finish file...\n");

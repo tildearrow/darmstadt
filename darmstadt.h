@@ -1,10 +1,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <drm.h>
 #include <va/va_drm.h>
@@ -25,7 +28,7 @@ extern "C" {
 
 #define DEVICE_PATH "/dev/dri/card1"
 
-#define DARM_VERSION "v1.2"
+#define DARM_VERSION "v1.3pre"
 
 typedef std::string string;
 
