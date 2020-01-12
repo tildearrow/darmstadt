@@ -2,7 +2,7 @@
 
 bool quit, newSize;
 
-int fd, primefd;
+int fd, primefd, renderfd;
 
 drmModePlaneRes* planeres;
 drmModePlane* plane;
@@ -420,15 +420,29 @@ int main(int argc, char** argv) {
   // open card
   logI("selected device %s.\n",devices[autoDevice]->nodes[DRM_NODE_PRIMARY]);
   
-  // set environment (workaround for AMD card)
+  // set environment (workaround for X11)
   if (devImportance(autoDevice)==2) {
     setenv("LIBVA_DRIVER_NAME","radeonsi",0);
+  }
+
+  // TODO: test with iHD
+  if (devImportance(autoDevice)==1) {
+    setenv("LIBVA_DRIVER_NAME","i965",0);
   }
   
   fd=open(devices[autoDevice]->nodes[DRM_NODE_PRIMARY],O_RDWR);
   if (fd<0) {
     perror("couldn't open card");
     return 1;
+  }
+
+  // Intel devices require special treatment
+  if (devImportance(autoDevice)==1) {
+    renderfd=open(devices[autoDevice]->nodes[DRM_NODE_RENDER],O_RDWR);
+    if (renderfd<0) {
+      perror("couldn't open render");
+      return 1;
+    }
   }
   
   ver=drmGetVersion(fd);
@@ -499,7 +513,11 @@ int main(int argc, char** argv) {
   if (plane) drmModeFreePlane(plane);
   if (fb) drmModeFreeFB(fb);
   
-  vaInst=vaGetDisplayDRM(fd);
+  if (devImportance(autoDevice)==1) {
+    vaInst=vaGetDisplayDRM(renderfd);
+  } else {
+    vaInst=vaGetDisplayDRM(fd);
+  }
   if (!vaDisplayIsValid(vaInst)) {
     logE("could not open VA-API...\n");
     return 1;
