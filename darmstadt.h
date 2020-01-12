@@ -1,9 +1,52 @@
+// ~> DARMSTADT <~ - low-overhead full-hardware screen capture.
+//
+// ...I need to write this little note.
+// this project was originally designed for my own internal usage during
+// early 2019, as a result of severe flaws (such as stuttering) with
+// FFmpeg and OBS.
+// since then, I have been tuning the software, trying to achieve
+// 4K60 frame perfection.
+// I went as far as having to practice raster mastery and write caching.
+// .......................
+// ...until...
+// Shiny.............
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// -AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!!!!!!!1
+
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <pthread.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -18,6 +61,8 @@
 #include <string>
 #include <queue>
 
+#include "ta-log.h"
+
 // METHOD 1: use our own method for capture, and FFmpeg for encode
 extern "C" {
   #include <libavcodec/avcodec.h>
@@ -30,6 +75,7 @@ extern "C" {
 
 #define DARM_VERSION "v1.3pre"
 
+#define S(x) std::string(x)
 typedef std::string string;
 
 bool operator ==(const struct timespec& l, const struct timespec& r);
@@ -58,6 +104,25 @@ struct qFrame {
   drmModePlane* plane;
   qFrame(int a, unsigned int b, unsigned int c, struct timespec d, drmModeFBPtr f, drmModePlanePtr pla): fd(a), pitch(c), objsize(b*c), ts(d), fb(f), plane(pla) {}
   qFrame(): fd(-1), pitch(0), objsize(0), ts(mkts(0,0)), fb(NULL), plane(NULL) {}
+};
+
+enum Vendor {
+  VendorIntel=0,
+  VendorAMD,
+  VendorNVIDIA, // ?!?!
+  VendorOther=255
+};
+
+struct Device {
+  string path, busID, name;
+  Vendor vendor;
+};
+
+struct Param {
+  string name;
+  bool value;
+  bool (*func)(string);
+  Param(string n, bool v, bool (*f)(string)): name(n), value(v), func(f) {}
 };
 
 int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);

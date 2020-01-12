@@ -1,6 +1,6 @@
 #include "darmstadt.h"
 
-bool quit;
+bool quit, newSize;
 
 int fd, primefd;
 
@@ -83,6 +83,17 @@ SyncMethod syncMethod;
 
 struct winsize winSize;
 
+//std::vector<Device> devices;
+drmDevice* devices[128];
+int deviceCount;
+std::vector<Param> params;
+
+string encName;
+int autoDevice;
+
+// datasets for graphs
+float dsScanOff[1024]; size_t dsScanOffPos;
+
 void* cacheThread(void* data) {
   int safeWritePos;
   while (1) {
@@ -109,7 +120,6 @@ void* cacheThread(void* data) {
       fwrite(writeBuf+wbReadPos,1,DARM_WRITEBUF_SIZE-wbReadPos,f);
       fwrite(writeBuf,1,safeWritePos,f);
     } else {
-      //printf("WTF\n");
       fwrite(writeBuf+wbReadPos,1,safeWritePos-wbReadPos,f);
     }
   }
@@ -119,7 +129,6 @@ void* cacheThread(void* data) {
 }
 
 int writeToCache(void* data, unsigned char* buf, int size) {
-  //printf("\x1b[35mwriting, %d bytes.\x1b[m\n",size);
   if ((wbWritePos+size)>(DARM_WRITEBUF_SIZE-1)) {
     // ring buffer
     memcpy(writeBuf+wbWritePos,buf,(DARM_WRITEBUF_SIZE)-wbWritePos);
@@ -129,7 +138,6 @@ int writeToCache(void* data, unsigned char* buf, int size) {
   }
   wbWritePos+=size;
   wbWritePos&=DARM_WRITEBUF_SIZE-1;
-  //printf("BufPos: %x\n",wbWritePos);
   totalWritten+=size;
   bitRatePre+=size;
   if ((curTime(CLOCK_MONOTONIC)-brTime)>mkts(0,250000000)) {
@@ -204,12 +212,129 @@ end:
     return ret;
 }
 
+bool needsValue(string param) {
+  for (int i=0; i<params.size(); i++) {
+    if (params[i].name==param) {
+      return params[i].value;
+    }
+  }
+  return false;
+}
+
+void makeGraph(int x, int y, int w, int h, bool center, float* dataset, size_t dsize, int astart) {
+  float rMin, rMax;
+  int start=astart;
+  if (start<0) start+=dsize;
+  
+  rMin=-1; rMax=1;
+  
+  // Calculate Min/Max
+  for (int i=start; i!=((start+w)%dsize); i=(i+1)%dsize) {
+    if (dataset[i]<rMin) rMin=dataset[i];
+    if (dataset[i]>rMax) rMax=dataset[i];
+  }
+  
+  // If NOT Centered, Min Shall be Zero
+  if (!center) rMin=0;
+  
+  int dpos=start;
+  for (int i=0; i<w; i++) {
+    dpos=(dpos+1)%dsize;
+    printf("\x1b[%d;%dH+",1+y+(int)(((dataset[dpos]-rMin)/(rMax-rMin))*h),1+x+i);
+  }
+}
+
 void handleTerm(int data) {
   quit=true;
 }
 
 void handleWinCh(int data) {
-  ioctl(1,TIOCGWINSZ,&winSize);
+  newSize=true;
+}
+
+bool pSetH264(string u) {
+  encName="h264_vaapi";
+  return true;
+}
+
+bool pSetHEVC(string u) {
+  encName="hevc_vaapi";
+  return true;
+}
+
+bool pListDevices(string u) {
+  return true;
+}
+
+bool pSetDevice(string u) {
+  return true;
+}
+
+bool pSetVendor(string v) {
+  if (v=="Intel") {
+    
+  } else if (v=="AMD") {
+
+  } else if (v=="NVIDIA") {
+    logE("seriously? did you think that would work?\n");
+    return false;
+  } else if (v=="Other") {
+
+  } else {
+    logE("vendor: Intel, AMD or Other.\n");
+    return false;
+  }
+  return true;
+}
+
+bool pSetBusID(string u) {
+  return true;
+}
+
+bool pSetDisplay(string u) {
+  return true;
+}
+
+void initParams() {
+  params.push_back(Param("h264",false,pSetH264));
+  params.push_back(Param("hevc",false,pSetHEVC));
+  params.push_back(Param("listdevices",false,pListDevices));
+  params.push_back(Param("device",true,pSetDevice));
+  params.push_back(Param("vendor",true,pSetVendor));
+  params.push_back(Param("busid",true,pSetBusID));
+  params.push_back(Param("display",true,pSetDisplay));
+}
+
+// Intel IDs: 8086
+// AMD IDs: 1002 1022
+// NVIDIA IDs: 10de 12d2
+// 
+// devices are selected in the following order:
+// AMD > Intel > OtherVendor > NVIDIA (though it won't work)
+bool initDevices() {
+  deviceCount=drmGetDevices2(0,devices,128);
+  
+  for (int i=0; i<deviceCount; i++) {
+    logD("- device %d (%.2x:%.2x.%x): vendor %4x\n",i,
+           devices[i]->businfo.pci->bus,
+           devices[i]->businfo.pci->dev,
+           devices[i]->businfo.pci->func,
+           devices[i]->deviceinfo.pci->vendor_id);
+    logD("%s\n",devices[i]->nodes[DRM_NODE_PRIMARY]);
+  }
+  return true;
+}
+
+int devImportance(int id) {
+  switch (devices[id]->deviceinfo.pci->vendor_id) {
+    case 0x1002: case 0x1022: // AMD
+      return 2;
+    case 0x10de: case 0x12d2: // NVIDIA
+      return -9001;
+    case 0x8086: // Intel
+      return 1;
+  }
+  return 0; // OtherVendor
 }
 
 int main(int argc, char** argv) {
@@ -220,53 +345,121 @@ int main(int argc, char** argv) {
   saWinCh.sa_handler=handleWinCh;
   sigemptyset(&saTerm.sa_mask);
   sigemptyset(&saWinCh.sa_mask);
-  quit=false;
+  saWinCh.sa_flags=0;
+  quit=false; newSize=false;
   syncMethod=syncVBlank;
   totalWritten=0;
   bitRate=0;
   bitRatePre=0;
+  autoDevice=-1;
   brTime=curTime(CLOCK_MONOTONIC);
-  if (argc>1) {
-    outname=argv[1];
+  
+  encName="hevc_vaapi";
+
+  initParams();
+
+  // parse arguments
+  string arg, val;
+  size_t eqSplit, argStart;
+  for (int i=1; i<argc; i++) {
+    arg=""; val="";
+    if (argv[i][0]=='-') {
+      if (argv[i][1]=='-') {
+        argStart=2;
+      } else {
+        argStart=1;
+      }
+      arg=&argv[i][argStart];
+      eqSplit=arg.find_first_of('=');
+      if (eqSplit==string::npos) {
+        if (needsValue(arg)) {
+          if ((i+1)<argc) {
+            val=argv[i+1];
+            i++;
+          } else {
+            logE("incomplete param %s.\n",arg.c_str());
+            return 1;
+          }
+        }
+      } else {
+        val=arg.substr(eqSplit+1);
+        arg=arg.substr(0,eqSplit);
+      }
+      //printf("arg %s. val %s\n",arg.c_str(),val.c_str());
+      for (int j=0; j<params.size(); j++) {
+        if (params[j].name==arg) {
+          if (!params[j].func(val)) return 1;
+          break;
+        }
+      }
+    } else {
+      outname=argv[i];
+    }
   }
-  if (argc>2) {
-    syncMethod=syncTimer;
+  
+  // init devices
+  initDevices();
+  
+  // automatic device selection
+  for (int i=0; i<deviceCount; i++) {
+    if (devImportance(i)==-9001) continue;
+    if (autoDevice==-1) {
+      autoDevice=i;
+      continue;
+    }
+    if (devImportance(i)>devImportance(autoDevice)) {
+      autoDevice=i;
+    }
   }
+  
+  if (autoDevice==-1) {
+    logE("no viable devices found.\n");
+    return 1;
+  }
+
   // open card
-  fd=open(DEVICE_PATH,O_RDWR);
+  logI("selected device %s.\n",devices[autoDevice]->nodes[DRM_NODE_PRIMARY]);
+  
+  // set environment (workaround for AMD card)
+  if (devImportance(autoDevice)==2) {
+    setenv("LIBVA_DRIVER_NAME","radeonsi",0);
+  }
+  
+  fd=open(devices[autoDevice]->nodes[DRM_NODE_PRIMARY],O_RDWR);
   if (fd<0) {
     perror("couldn't open card");
     return 1;
   }
+  
   ver=drmGetVersion(fd);
   if (ver==NULL) {
-    printf("could not get version.\n");
+    logE("could not get version.\n");
     return 1;
   }
   drmFreeVersion(ver);
-  printf("video card opened.\n");
+  logD("video card opened.\n");
   
   if (drmSetClientCap(fd,DRM_CLIENT_CAP_UNIVERSAL_PLANES,1)<0) {
-    printf("i have to tell you... that universal planes can't happen...\n");
+    logE("i have to tell you... that universal planes can't happen...\n");
     return 1;
   }
   
   planeres=drmModeGetPlaneResources(fd);
   if (planeres==NULL) {
-    printf("i have to tell you... that I am unable to get plane resources...\n");
+    logE("i have to tell you... that I am unable to get plane resources...\n");
     return 1;
   }
   
   if (planeres->count_planes<0) {
-    printf("no planes. there are helicopters instead...\n");
+    logE("no planes. there are helicopters instead...\n");
     return 1;
   }
   
-  printf("number of planes: %d\n",planeres->count_planes);
+  logD("number of planes: %d\n",planeres->count_planes);
   for (unsigned int i=0; i<planeres->count_planes; i++) {
     plane=drmModeGetPlane(fd,planeres->planes[i]);
     if (plane==NULL) {
-      printf("skipping plane %d...\n",planeres->planes[i]);
+      logD("skipping plane %d...\n",planeres->planes[i]);
       continue;
     }
     
@@ -276,24 +469,26 @@ int main(int argc, char** argv) {
       continue;
     }
     
-    printf("using plane %d.\n",plane->plane_id);
+    logD("using plane %d.\n",plane->plane_id);
     planeid=plane->plane_id;
     break;
   }
   
   if (plane==NULL) {
-    printf("couldn't find any usable planes...\n");
+    logE("no displays available. can't record.\n");
     return 1;
   }
   
   fb=drmModeGetFB(fd,plane->fb_id);
   if (fb==NULL) {
-    printf("could not get framebuffer...\n");
+    logE("could not access display...\n");
     return 1;
   }
   
   if (!fb->handle) {
-    printf("setcap cap_sys_admin=ep\n");
+    logE("error: this program needs special permissions to capture the screen.\n");
+    logE("please grant permissions by running this under root:\n");
+    logE("setcap cap_sys_admin=ep %s\n",argv[0]);
     return 2;
   }
   
@@ -306,22 +501,22 @@ int main(int argc, char** argv) {
   
   vaInst=vaGetDisplayDRM(fd);
   if (!vaDisplayIsValid(vaInst)) {
-    printf("could not open VA-API...\n");
+    logE("could not open VA-API...\n");
     return 1;
   }
   if (vaInitialize(vaInst,&discvar1,&discvar2)!=VA_STATUS_SUCCESS) {
-    printf("could not initialize VA-API...\n");
+    logE("could not initialize VA-API...\n");
     return 1;
   }
   
-  printf("va-api instance opened (%s).\n",vaQueryVendorString(vaInst));
+  logD("va-api instance opened (%s).\n",vaQueryVendorString(vaInst));
   
   vaQueryImageFormats(vaInst,allowedFormats,&allowedFormatsSize);
   
   for (int i=0; i<allowedFormatsSize; i++) {
-    printf("format %d: - %.8x\n",i,allowedFormats[i].fourcc);
+    logD("format %d: - %.8x\n",i,allowedFormats[i].fourcc);
     if (allowedFormats[i].fourcc==VA_FOURCC_BGRX) {
-      printf("%d is the format!\n",i);
+      logD("%d is the format!\n",i);
       theFormat=i;
       break;
     }
@@ -333,16 +528,16 @@ int main(int argc, char** argv) {
   coAttr[0].value.value.i=VA_SURFACE_ATTRIB_USAGE_HINT_VPP_READ;
   
   if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,dw,dh,portFrame,1,coAttr,1))!=VA_STATUS_SUCCESS) {
-    printf("could not create surface for encoding... %x\n",vaStat);
+    logE("could not create surface for encoding... %x\n",vaStat);
     return 1;
   }
   
   if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConf)!=VA_STATUS_SUCCESS) {
-    printf("no videoproc.\n");
+    logE("no videoproc.\n");
     return 1;
   }
   if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
-    printf("we can't scale...\n");
+    logE("we can't scale...\n");
     return 1;
   }
   /*
@@ -354,18 +549,16 @@ int main(int argc, char** argv) {
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
   extractSource=(AVHWDeviceContext*)wrappedSource->data;
   
-  printf("creating FFmpeg hardware instance\n");
+  logD("creating FFmpeg hardware instance\n");
   if (av_hwdevice_ctx_create_derived(&ffhardInst, AV_HWDEVICE_TYPE_VAAPI, wrappedSource, 0)<0) {
-    printf("check me later\n");
+    logD("check me later\n");
   }
   ((AVVAAPIDeviceContext*)(extractSource->hwctx))->display=vaInst;
-  printf("pre\n");
   av_hwdevice_ctx_init(ffhardInst);
-  printf("post!\n");
   
-  printf("creating encoder\n");
-  if ((encInfo=avcodec_find_encoder_by_name("hevc_vaapi"))==NULL) {
-    printf("could not find encoder...\n");
+  logD("creating encoder\n");
+  if ((encInfo=avcodec_find_encoder_by_name(encName.c_str()))==NULL) {
+    logE("your card does not support %s.\n",encName.c_str());
     return 1;
   }
   encoder=avcodec_alloc_context3(encInfo);
@@ -375,7 +568,7 @@ int main(int argc, char** argv) {
   //encoder->framerate=(AVRational){1000,1};
   encoder->sample_aspect_ratio=(AVRational){1,1};
   encoder->pix_fmt=AV_PIX_FMT_VAAPI;
-  printf("setting hwframe ctx\n");
+  logD("setting hwframe ctx\n");
   /*
   if (set_hwframe_ctx(encoder,ffhardInst)<0) {
     printf("could not set hardware to FFmpeg\n");
@@ -388,11 +581,8 @@ int main(int argc, char** argv) {
   ((AVHWFramesContext*)hardFrameDataR->data)->initial_pool_size = 32;
   ((AVHWFramesContext*)hardFrameDataR->data)->format=AV_PIX_FMT_VAAPI;
   ((AVHWFramesContext*)hardFrameDataR->data)->sw_format=AV_PIX_FMT_NV12;
-  printf("%#lx\n",vaInst);
   av_hwframe_ctx_init(hardFrameDataR);
   encoder->hw_frames_ctx=hardFrameDataR;
-  
-  printf("%#lx\n",vaInst);
   
   av_dict_set(&encOpt,"g","40",0);
   av_dict_set(&encOpt,"max_b_frames","0",0);
@@ -404,14 +594,14 @@ int main(int argc, char** argv) {
   //av_dict_set(&encOpt,"compression_level","15",0);
   
   if ((avcodec_open2(encoder,encInfo,&encOpt))<0) {
-    printf("could not open encoder :(\n");
+    logE("could not open encoder :(\n");
     return 1;
   }
   
   // create stream
   avformat_alloc_output_context2(&out,NULL,NULL,outname);
   if (out==NULL) {
-    printf("couldn't open output...\n");
+    logE("couldn't open output...\n");
     return 1;
   }
   stream=avformat_new_stream(out,encInfo);
@@ -440,7 +630,7 @@ int main(int argc, char** argv) {
   char e[4096];
   if ((retv=avformat_write_header(out,&badCodingPractice))<0) {
     av_make_error_string(e,4095,retv);
-    printf("could not write header... %s\n",e);
+    logE("could not write header... %s\n",e);
     return 1;
   }
 
@@ -456,11 +646,11 @@ int main(int argc, char** argv) {
   wbWritePos=0;
 
   if (pthread_create(&thr,NULL,cacheThread,NULL)<0) {
-    printf("could not create encoding thread...\n");
+    logE("could not create encoding thread...\n");
     return 1;
   }
   
-  printf("entering main loop. %dx%d\n",dw,dh);
+  logI("recording!\n");
   
   frame=0;
   
@@ -491,8 +681,8 @@ int main(int argc, char** argv) {
     drmWaitVBlank(fd,&vblank);
     vreply=vblank.reply;
     startSeq++;
-    if ((vblank.reply.sequence-startSeq)>1) {
-      printf("\x1b[1;31m%d: too far away! recalibrating. (%d)\x1b[m\n",frame,recal+1);
+    if ((vblank.reply.sequence-startSeq)>0) {
+      printf("\x1b[2K\x1b[1;33m%d: dropped frame! (%d)\x1b[m\n",frame,recal+1);
       startSeq=vreply.sequence;
       recal++;
     }
@@ -529,16 +719,22 @@ int main(int argc, char** argv) {
     //
     // WAIT! why is this method still here? the
     // superior "absolute" approach is in place!
+    if (newSize) {
+      newSize=false;
+      ioctl(1,TIOCGWINSZ,&winSize);
+      printf("\x1b[2J\n");
+    }
+    
     int darmStringSize=strlen("~> DARMSTADT " DARM_VERSION "<~");
-    printf("\x1b[1;%dH\x1b[1;33m~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[1;33m <~\x1b[m\n",(winSize.ws_col-darmStringSize)/2);
+    printf("\x1b[1;%dH\x1b[2K\x1b[1;33m~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[1;33m <~\x1b[m\n",(winSize.ws_col-darmStringSize)/2);
     if (syncMethod==syncTimer) {
       if (vtime<nextMilestone) continue;
       nextMilestone=nextMilestone+mkts(0,16666667);
       while ((vtime-mkts(0,16666667))>nextMilestone) nextMilestone=nextMilestone+mkts(0,16666667);
     }
     long int delta=(vtime-dtime).tv_nsec;
-    delta=(int)round((double)1000000000/(double)delta);
-    if (delta==0) delta=1000000000;
+    if (delta!=0) delta=(int)round((double)1000000000/(double)delta);
+    //if (delta==0) delta=1000000000;
     
     // >>> STATUS LINE <<<
     printf(
@@ -549,7 +745,7 @@ int main(int argc, char** argv) {
       // time
       "%.2ld:%.2ld:%.2ld.%.3ld. "
       // FPS
-      "FPS: %s%ld "
+      "FPS:%s%3ld "
       // queue
       "\x1b[mqueue: \x1b[1m%5dK "
       // bitrate
@@ -576,34 +772,38 @@ int main(int argc, char** argv) {
       // end
       winSize.ws_row-1);
     
-    if (frame>33 && delta>=0 && delta<120) {
+    if (frame>1 && delta>=0 && delta<120) {
       speeds[delta]++;
     }
     tStart=curTime(CLOCK_MONOTONIC);
     plane=drmModeGetPlane(fd,planeid);
     if (plane==NULL) {
-      printf("plane crash\n");
+      printf("\x1b[2K\x1b[1;31m%d: the plane no longer exists!\x1b[m\n",frame);
       break;
     }
     if (!plane->fb_id) {
-      printf("no fb id\n");
+      printf("\x1b[2K\x1b[1;31m%d: the plane doesn't have a framebuffer!\x1b[m\n",frame);
       break;
     }
     fb=drmModeGetFB(fd,plane->fb_id);
     if (fb==NULL) {
-      printf("no fb\n");
+      printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
       break;
     }
     if (!fb->handle) {
-      printf("no handle\n");
+      printf("\x1b[2K\x1b[1;31m%d: the framebuffer has invalid handle!\x1b[m\n",frame);
       break;
     }
     
     if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
-      printf("couldn't turn handle to FD :(\n");
+      printf("\x1b[2K\x1b[1;31m%d: unable to prepare frame for the encoder!\x1b[m\n",frame);
       break;
     }
     //printf("prime FD: %d\n",primefd);
+    
+    dsScanOff[dsScanOffPos++]=(wtEnd-wtStart).tv_nsec;
+    dsScanOffPos&=1023;
+    //makeGraph(0,2,40,12,true,dsScanOff,1024,dsScanOffPos-40);
     
     // RETRIEVE CODE BEGIN //
     portedFD=primefd;
@@ -705,10 +905,10 @@ tEnd=curTime(CLOCK_MONOTONIC);
   printf("\x1b[?1049l\n");
 
   if (av_write_trailer(out)<0) {
-    printf("could not finish file...\n");
+    logW("could not finish file...\n");
   }
   
-  printf("finishing output...\n");
+  logD("finishing output...\n");
   pthread_join(thr,&badCodingPractice1);
 
   av_free(out->pb->buffer);
@@ -719,24 +919,25 @@ tEnd=curTime(CLOCK_MONOTONIC);
   vaDestroyContext(vaInst,scalerC);
   vaDestroyContext(vaInst,copierC);
   if ((vaStat=vaDestroySurfaces(vaInst,portFrame,1))!=VA_STATUS_SUCCESS) {
-    printf("destroy portframes error %x\n",vaStat);
+    logE("destroy portframes error %x\n",vaStat);
   }
   vaTerminate(vaInst);
 
   close(fd);
   
-  printf("finished.\n");
+  logI("finished.\n");
 
   printf("--FRAME REPORT--\n");
-  if (frame<=33) {
-    printf("too short! can't estimate.\n");
+  if (frame<=1) {
+    logW("too short! can't estimate.\n");
   } else {
     for (int i=0; i<120; i++) {
       if (speeds[i]>0) {
-        printf("%d FPS: %d (%.2f%)\n",i,speeds[i],100.0*((double)speeds[i]/(double)(frame-34)));
+        printf("%d FPS: %d (%.2f%)\n",i,speeds[i],100.0*((double)speeds[i]/(double)(frame-2)));
       }
     }
   }
-  printf("times we had to recalibrate: %d\n",recal);
+  printf("dropped frames: %d\n",recal);
+  logI("finished recording %.2ld:%.2ld:%.2ld.%.3ld (%d).\n",vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,frame);
   return 0;
 }

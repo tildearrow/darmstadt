@@ -14,6 +14,11 @@
 
 # roadmap
 
+## v1.3
+
+- even more frame perfection
+- 
+
 ## v2.0
 
 - more command line options
