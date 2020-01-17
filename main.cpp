@@ -95,6 +95,8 @@ int autoDevice;
 // datasets for graphs
 float dsScanOff[1024]; size_t dsScanOffPos;
 
+AVRational tb;
+
 void* cacheThread(void* data) {
   int safeWritePos;
   cacheRun=true;
@@ -216,9 +218,11 @@ static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *
             break;
         enc_pkt.stream_index = 0;
         str->cur_dts = frame->pts-1;
-        enc_pkt.pts = frame->pts;
+        //enc_pkt.pts = frame->pts;
+        av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
+        str->cur_dts = enc_pkt.pts-1;
         wtStart=curTime(CLOCK_MONOTONIC);
-        if (av_write_frame(fout,&enc_pkt)<0) {
+        if (av_interleaved_write_frame(fout,&enc_pkt)<0) {
           printf("unable to write frame");
 }
         avformat_flush(fout);
@@ -600,10 +604,11 @@ int main(int argc, char** argv) {
     logE("your card does not support %s.\n",encName.c_str());
     return 1;
   }
+  tb=(AVRational){1,100000};
   encoder=avcodec_alloc_context3(encInfo);
   encoder->width=ow;
   encoder->height=oh;
-  encoder->time_base=(AVRational){1,900};
+  encoder->time_base=tb;
   //encoder->framerate=(AVRational){1000,1};
   encoder->sample_aspect_ratio=(AVRational){1,1};
   encoder->pix_fmt=AV_PIX_FMT_VAAPI;
@@ -875,7 +880,9 @@ int main(int argc, char** argv) {
       
       // ENCODE SINGLE-THREAD CODE BEGIN //
     
-    hardFrame->pts=((vtime.tv_sec*100000+vtime.tv_nsec/10000)*9)/10;
+    //hardFrame->pts=((vtime.tv_sec*100000+vtime.tv_nsec/10000)*9)/10;
+    
+    hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
     //printf("pts: %ld\n",hardFrame->pts);
 
     // convert
