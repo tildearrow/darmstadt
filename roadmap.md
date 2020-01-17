@@ -17,17 +17,17 @@
 ## v1.3
 
 - even more frame perfection
-- 
+- command line options
+- should work on intel
+- public release
 
 ## v2.0
 
-- more command line options
-- should work on intel
-- public release
-- encoding and capturing are now 2 separate threads for even more perfect frames than before
+- audio recording
 
 ## v3.0
 
+- encoding and capturing are now 2 separate threads for even more perfect frames than before
 - AMF backend for AMD cards
   - this will allow us to achieve true frame perfection by being able to use a lower encoding profile
 

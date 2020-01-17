@@ -278,6 +278,30 @@ void handleWinCh(int data) {
   newSize=true;
 }
 
+int devImportance(int id) {
+  switch (devices[id]->deviceinfo.pci->vendor_id) {
+    case 0x1002: case 0x1022: // AMD
+      return 2;
+    case 0x10de: case 0x12d2: // NVIDIA
+      return -9001;
+    case 0x8086: // Intel
+      return 1;
+  }
+  return 0; // OtherVendor
+}
+
+const char* getVendor(int id) {
+  switch (devImportance(id)) {
+    case 1:
+      return "Intel";
+    case 2:
+      return "AMD";
+    case -9001:
+      return "NVIDIA";
+  }
+  return "Other";
+}
+
 bool pSetH264(string u) {
   encName="h264_vaapi";
   return true;
@@ -288,29 +312,80 @@ bool pSetHEVC(string u) {
   return true;
 }
 
-bool pListDevices(string u) {
+bool pSetMJPEG(string u) {
+  encName="mjpeg_vaapi";
   return true;
 }
 
+bool pSetMPEG2(string u) {
+  encName="mpeg2_vaapi";
+  return true;
+}
+
+bool pSetVP8(string u) {
+  encName="vp8_vaapi";
+  return true;
+}
+
+bool pSetVP9(string u) {
+  encName="vp9_vaapi";
+  return true;
+}
+
+bool pListDevices(string u) {
+  for (int i=0; i<deviceCount; i++) {
+    printf("- device %d (%s) (%.2x:%.2x.%x): %s\n",i,getVendor(i),
+           devices[i]->businfo.pci->bus,
+           devices[i]->businfo.pci->dev,
+           devices[i]->businfo.pci->func,
+           devices[i]->nodes[DRM_NODE_PRIMARY]);
+  }
+  return false;
+}
+
 bool pSetDevice(string u) {
+  try {
+    autoDevice=stoi(u);
+  } catch (std::exception& err) {
+    logE("invalid device ID. use -listdevices to see available devices.\n");
+    return false;
+  }
+  if (autoDevice>=deviceCount || autoDevice<0) {
+    logE("invalid device ID. use -listdevices to see available devices.\n");
+    return false;
+  }
+  if (devImportance(autoDevice)==-9001) {
+    logE("seriously? did you think that would work?\n");
+    return false;
+  }
   return true;
 }
 
 bool pSetVendor(string v) {
+  int findID;
+  findID=0;
   if (v=="Intel") {
-    
+    findID=1;
   } else if (v=="AMD") {
-
+    findID=2;
   } else if (v=="NVIDIA") {
     logE("seriously? did you think that would work?\n");
     return false;
   } else if (v=="Other") {
-
+    findID=0;
   } else {
     logE("vendor: Intel, AMD or Other.\n");
     return false;
   }
-  return true;
+
+  for (int i=0; i<deviceCount; i++) {
+    if (devImportance(i)==findID) {
+      autoDevice=i;
+      return true;
+    }
+  }
+  logE("no devices from this vendor found.\n");
+  return false;
 }
 
 bool pSetBusID(string u) {
@@ -324,6 +399,10 @@ bool pSetDisplay(string u) {
 void initParams() {
   params.push_back(Param("h264",false,pSetH264));
   params.push_back(Param("hevc",false,pSetHEVC));
+  params.push_back(Param("mjpeg",false,pSetMJPEG));
+  params.push_back(Param("mpeg2",false,pSetMPEG2));
+  params.push_back(Param("vp8",false,pSetVP8));
+  params.push_back(Param("vp9",false,pSetVP9));
   params.push_back(Param("listdevices",false,pListDevices));
   params.push_back(Param("device",true,pSetDevice));
   params.push_back(Param("vendor",true,pSetVendor));
@@ -340,6 +419,7 @@ void initParams() {
 bool initDevices() {
   deviceCount=drmGetDevices2(0,devices,128);
   
+  /*
   for (int i=0; i<deviceCount; i++) {
     logD("- device %d (%.2x:%.2x.%x): vendor %4x\n",i,
            devices[i]->businfo.pci->bus,
@@ -348,19 +428,8 @@ bool initDevices() {
            devices[i]->deviceinfo.pci->vendor_id);
     logD("%s\n",devices[i]->nodes[DRM_NODE_PRIMARY]);
   }
+  */
   return true;
-}
-
-int devImportance(int id) {
-  switch (devices[id]->deviceinfo.pci->vendor_id) {
-    case 0x1002: case 0x1022: // AMD
-      return 2;
-    case 0x10de: case 0x12d2: // NVIDIA
-      return -9001;
-    case 0x8086: // Intel
-      return 1;
-  }
-  return 0; // OtherVendor
 }
 
 int main(int argc, char** argv) {
@@ -385,6 +454,9 @@ int main(int argc, char** argv) {
   encName="hevc_vaapi";
 
   initParams();
+
+  // init devices
+  initDevices();  
 
   // parse arguments
   string arg, val;
@@ -425,18 +497,17 @@ int main(int argc, char** argv) {
     }
   }
   
-  // init devices
-  initDevices();
-  
   // automatic device selection
-  for (int i=0; i<deviceCount; i++) {
-    if (devImportance(i)==-9001) continue;
-    if (autoDevice==-1) {
-      autoDevice=i;
-      continue;
-    }
-    if (devImportance(i)>devImportance(autoDevice)) {
-      autoDevice=i;
+  if (autoDevice==-1) {
+    for (int i=0; i<deviceCount; i++) {
+      if (devImportance(i)==-9001) continue;
+      if (autoDevice==-1) {
+        autoDevice=i;
+        continue;
+      }
+      if (devImportance(i)>devImportance(autoDevice)) {
+        autoDevice=i;
+      }
     }
   }
   
@@ -650,6 +721,7 @@ int main(int argc, char** argv) {
   }
   stream=avformat_new_stream(out,encInfo);
   stream->id=0;
+  // HACK TODO: ?!?!?!
   stream->time_base=(AVRational){1,900};
 
   if (out->oformat->flags&AVFMT_GLOBALHEADER)
