@@ -16,7 +16,7 @@ struct timespec btime, vtime, dtime;
 
 struct timespec wtStart, wtEnd;
 
-int dw, dh;
+int dw, dh, ow, oh;
 
 pthread_t thr;
 std::queue<qFrame> frames;
@@ -68,6 +68,7 @@ AVStream* stream;
 char* writeBuf;
 int wbReadPos, wbWritePos;
 long int totalWritten, bitRate, bitRatePre;
+bool cacheEmpty, cacheRun;
 struct timespec brTime;
 
 AVDictionary* badCodingPractice=NULL;
@@ -96,6 +97,7 @@ float dsScanOff[1024]; size_t dsScanOffPos;
 
 void* cacheThread(void* data) {
   int safeWritePos;
+  cacheRun=true;
   while (1) {
     safeWritePos=wbWritePos;
     if (wbReadPos!=safeWritePos) {
@@ -108,6 +110,7 @@ void* cacheThread(void* data) {
       }
     }
     wbReadPos=safeWritePos;
+    cacheEmpty=true;
     usleep(50000);
     if (quit) break;
   }
@@ -124,11 +127,18 @@ void* cacheThread(void* data) {
     }
   }
   wbReadPos=safeWritePos;
+  cacheEmpty=true;
+  cacheRun=false;
   
   return NULL;
 }
 
 int writeToCache(void* data, unsigned char* buf, int size) {
+  if (!cacheRun) {
+    fwrite(buf,1,size,f);
+    return size;
+  }
+  cacheEmpty=false;
   if ((wbWritePos+size)>(DARM_WRITEBUF_SIZE-1)) {
     // ring buffer
     memcpy(writeBuf+wbWritePos,buf,(DARM_WRITEBUF_SIZE)-wbWritePos);
@@ -148,9 +158,21 @@ int writeToCache(void* data, unsigned char* buf, int size) {
   return size;
 }
 
+void waitForCache() {
+  //printf("waiting for cache!\n");
+  if (!cacheRun) {
+    return;
+  }
+  while (!cacheEmpty) {
+    usleep(1000);
+  }
+}
+
 int64_t seekCache(void* data, int64_t off, int whence) {
   // flush cache, then seek on file.
-  printf("\x1b[1;35mSEEKING, %ld\x1b[m\n\n",off);
+  waitForCache();
+  logD("\x1b[1;35mSEEKING, %ld\x1b[m\n",off);
+  fseek(f,off,whence);
   if (whence == AVSEEK_SIZE) {
     return -1;
   }
@@ -351,6 +373,8 @@ int main(int argc, char** argv) {
   totalWritten=0;
   bitRate=0;
   bitRatePre=0;
+  cacheEmpty=false;
+  cacheRun=false;
   autoDevice=-1;
   brTime=curTime(CLOCK_MONOTONIC);
   
@@ -509,6 +533,9 @@ int main(int argc, char** argv) {
   dw=fb->width;
   dh=fb->height;
   
+  ow=dw;
+  oh=dh;
+  
   if (planeres) drmModeFreePlaneResources(planeres);
   if (plane) drmModeFreePlane(plane);
   if (fb) drmModeFreeFB(fb);
@@ -545,7 +572,7 @@ int main(int argc, char** argv) {
   coAttr[0].value.type=VAGenericValueTypeInteger;
   coAttr[0].value.value.i=VA_SURFACE_ATTRIB_USAGE_HINT_VPP_READ;
   
-  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,dw,dh,portFrame,1,coAttr,1))!=VA_STATUS_SUCCESS) {
+  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,ow,oh,portFrame,1,coAttr,1))!=VA_STATUS_SUCCESS) {
     logE("could not create surface for encoding... %x\n",vaStat);
     return 1;
   }
@@ -554,16 +581,10 @@ int main(int argc, char** argv) {
     logE("no videoproc.\n");
     return 1;
   }
-  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
+  if (vaCreateContext(vaInst,vaConf,ow,oh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
     logE("we can't scale...\n");
     return 1;
   }
-  /*
-  if (vaCreateContext(vaInst,vaConf,dw,dh,VA_PROGRESSIVE,NULL,0,&copierC)!=VA_STATUS_SUCCESS) {
-    printf("we can't copy, i think...\n");
-    return 1;
-  }
-  */
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
   extractSource=(AVHWDeviceContext*)wrappedSource->data;
   
@@ -580,8 +601,8 @@ int main(int argc, char** argv) {
     return 1;
   }
   encoder=avcodec_alloc_context3(encInfo);
-  encoder->width=dw;
-  encoder->height=dh;
+  encoder->width=ow;
+  encoder->height=oh;
   encoder->time_base=(AVRational){1,900};
   //encoder->framerate=(AVRational){1000,1};
   encoder->sample_aspect_ratio=(AVRational){1,1};
@@ -594,8 +615,8 @@ int main(int argc, char** argv) {
   }*/
   
   hardFrameDataR=av_hwframe_ctx_alloc(ffhardInst);
-  ((AVHWFramesContext*)hardFrameDataR->data)->width=dw;
-  ((AVHWFramesContext*)hardFrameDataR->data)->height=dh;
+  ((AVHWFramesContext*)hardFrameDataR->data)->width=ow;
+  ((AVHWFramesContext*)hardFrameDataR->data)->height=oh;
   ((AVHWFramesContext*)hardFrameDataR->data)->initial_pool_size = 32;
   ((AVHWFramesContext*)hardFrameDataR->data)->format=AV_PIX_FMT_VAAPI;
   ((AVHWFramesContext*)hardFrameDataR->data)->sw_format=AV_PIX_FMT_NV12;
@@ -862,8 +883,8 @@ int main(int argc, char** argv) {
     
     scaleRegion.x=0;
     scaleRegion.y=0;
-    scaleRegion.width=dw;
-    scaleRegion.height=dh;
+    scaleRegion.width=ow;
+    scaleRegion.height=oh;
 
     scaler.surface=surface;
     scaler.surface_region=0;
