@@ -42,6 +42,7 @@ VAImageFormat allowedFormats[2048];
 int allowedFormatsSize;
 int theFormat;
 int vaStat;
+bool paused, noSignal;
 
 int discvar1, discvar2;
 
@@ -448,6 +449,8 @@ int main(int argc, char** argv) {
   bitRatePre=0;
   cacheEmpty=false;
   cacheRun=false;
+  noSignal=false;
+  paused=false;
   autoDevice=-1;
   brTime=curTime(CLOCK_MONOTONIC);
   
@@ -794,7 +797,12 @@ int main(int argc, char** argv) {
     vblank.request.sequence=startSeq+1;
     vblank.request.type=DRM_VBLANK_ABSOLUTE;
     
-    drmWaitVBlank(fd,&vblank);
+    if (drmWaitVBlank(fd,&vblank)<0) {
+      noSignal=true;
+      usleep(62500);
+    } else {
+      noSignal=false;
+    }
     vreply=vblank.reply;
     startSeq++;
     if ((vblank.reply.sequence-startSeq)>0) {
@@ -852,12 +860,13 @@ int main(int argc, char** argv) {
     if (delta!=0) delta=(int)round((double)1000000000/(double)delta);
     //if (delta==0) delta=1000000000;
     
+        
     // >>> STATUS LINE <<<
     printf(
       // begin
       "\x1b[%d;1H\x1b[2K\x1b[m"
       // frame
-      "frame \x1b[1m% 8d\x1b[m: "
+      "%s"
       // time
       "%.2ld:%.2ld:%.2ld.%.3ld. "
       // FPS
@@ -874,7 +883,7 @@ int main(int argc, char** argv) {
       // ARGUMENTS
       winSize.ws_row,
       // frame
-      frame,
+      (noSignal)?("\x1b[1;31m-> NO SIGNAL <- \x1b[m"):(strFormat("frame \x1b[1m% 8d\x1b[m: ",frame).c_str()),
       // time
       vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,
       // FPS
@@ -895,24 +904,29 @@ int main(int argc, char** argv) {
     plane=drmModeGetPlane(fd,planeid);
     if (plane==NULL) {
       printf("\x1b[2K\x1b[1;31m%d: the plane no longer exists!\x1b[m\n",frame);
+      quit=true;
       break;
     }
     if (!plane->fb_id) {
       printf("\x1b[2K\x1b[1;31m%d: the plane doesn't have a framebuffer!\x1b[m\n",frame);
+      quit=true;
       break;
     }
     fb=drmModeGetFB(fd,plane->fb_id);
     if (fb==NULL) {
       printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
+      quit=true;
       break;
     }
     if (!fb->handle) {
       printf("\x1b[2K\x1b[1;31m%d: the framebuffer has invalid handle!\x1b[m\n",frame);
+      quit=true;
       break;
     }
     
     if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
       printf("\x1b[2K\x1b[1;31m%d: unable to prepare frame for the encoder!\x1b[m\n",frame);
+      quit=true;
       break;
     }
     //printf("prime FD: %d\n",primefd);
@@ -1016,7 +1030,9 @@ tEnd=curTime(CLOCK_MONOTONIC);
 
     
     
-    frame++;
+    if (!noSignal) {
+      frame++;
+    }
     if (quit) break;
   }
   

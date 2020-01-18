@@ -90,6 +90,8 @@ struct timespec stots(string s);
 string tstos(struct timespec ts);
 struct timespec curTime(clockid_t clockSource);
 
+string strFormat(const char* format, ...);
+
 enum SyncMethod {
   syncVBlank=0,
   syncTimer
