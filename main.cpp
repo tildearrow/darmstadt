@@ -412,6 +412,14 @@ bool pSetSkip(string u) {
   return true;
 }
 
+bool pSet10Bit(string u) {
+  return true;
+}
+
+bool pSet444(string u) {
+  return true;
+}
+
 void initParams() {
   params.push_back(Param("h264",false,pSetH264));
   params.push_back(Param("hevc",false,pSetHEVC));
@@ -419,6 +427,8 @@ void initParams() {
   params.push_back(Param("mpeg2",false,pSetMPEG2));
   params.push_back(Param("vp8",false,pSetVP8));
   params.push_back(Param("vp9",false,pSetVP9));
+  params.push_back(Param("10bit",false,pSet10Bit));
+  params.push_back(Param("absoluteperfection",false,pSet444));
   params.push_back(Param("listdevices",false,pListDevices));
   params.push_back(Param("device",true,pSetDevice));
   params.push_back(Param("vendor",true,pSetVendor));
@@ -638,14 +648,12 @@ int main(int argc, char** argv) {
     return 1;
   }
   
-  logD("va-api instance opened (%s).\n",vaQueryVendorString(vaInst));
+  logD("va-api instance opened. %s.\n",vaQueryVendorString(vaInst));
   
   vaQueryImageFormats(vaInst,allowedFormats,&allowedFormatsSize);
   
   for (int i=0; i<allowedFormatsSize; i++) {
-    logD("format %d: - %.8x\n",i,allowedFormats[i].fourcc);
     if (allowedFormats[i].fourcc==VA_FOURCC_BGRX) {
-      logD("%d is the format!\n",i);
       theFormat=i;
       break;
     }
@@ -776,6 +784,11 @@ int main(int argc, char** argv) {
     return 1;
   }
   
+  printf("\x1b[1m|\x1b[m\n");
+  printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[m\n");
+  printf("\x1b[1m|\x1b[m\n");
+  printf("\x1b[1m- screen %dx%d, output %dx%d, 4:2:0\x1b[m\n",dw,dh,ow,oh);
+  
   logI("recording!\n");
   
   frame=0;
@@ -797,8 +810,6 @@ int main(int argc, char** argv) {
   startSeq=vreply.sequence;
   int recal=0;
   
-  printf("\x1b[?1049h\x1b[2J\n");
-  
   ioctl(1,TIOCGWINSZ,&winSize);
   while (1) {
     vblank.request.sequence=startSeq+fskip;
@@ -813,9 +824,8 @@ int main(int argc, char** argv) {
     vreply=vblank.reply;
     startSeq+=fskip;
     if ((vblank.reply.sequence-startSeq)>0) {
-      printf("\x1b[2K\x1b[1;33m%d: dropped frame! (%d)\x1b[m\n",frame,recal+1);
+      printf("\x1b[2K\x1b[1;33m%d: dropped frame! (%d)\x1b[m\n",frame,++recal);
       startSeq=vreply.sequence;
-      recal++;
     }
     
     //printf("PRE: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
@@ -853,11 +863,8 @@ int main(int argc, char** argv) {
     if (newSize) {
       newSize=false;
       ioctl(1,TIOCGWINSZ,&winSize);
-      printf("\x1b[2J\n");
     }
     
-    int darmStringSize=strlen("~> DARMSTADT " DARM_VERSION "<~");
-    printf("\x1b[1;%dH\x1b[2K\x1b[1;33m~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[1;33m <~\x1b[m\n",(winSize.ws_col-darmStringSize)/2);
     if (syncMethod==syncTimer) {
       if (vtime<nextMilestone) continue;
       nextMilestone=nextMilestone+mkts(0,16666667);
@@ -1032,18 +1039,14 @@ int main(int argc, char** argv) {
     drmModeFreeFB(fb);
     drmModeFreePlane(plane);
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
-tEnd=curTime(CLOCK_MONOTONIC);
-        //printf("%s\n",tstos(tEnd-tStart).c_str());
+    tEnd=curTime(CLOCK_MONOTONIC);
+    //printf("%s\n",tstos(tEnd-tStart).c_str());
 
-    
-    
     if (!noSignal) {
       frame++;
     }
     if (quit) break;
   }
-  
-  printf("\x1b[?1049l\n");
 
   if (av_write_trailer(out)<0) {
     logW("could not finish file...\n");
