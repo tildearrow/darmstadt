@@ -42,6 +42,7 @@ VAImageFormat allowedFormats[2048];
 int allowedFormatsSize;
 int theFormat;
 int vaStat;
+int fskip;
 bool paused, noSignal;
 
 int discvar1, discvar2;
@@ -397,6 +398,20 @@ bool pSetDisplay(string u) {
   return true;
 }
 
+bool pSetSkip(string u) {
+  try {
+    fskip=stoi(u);
+  } catch (std::exception& err) {
+    logE("invalid frameskip value.\n");
+    return false;
+  }
+  if (fskip<1) {
+    logE("frameskip must be at least 1.\n");
+    return false;
+  }
+  return true;
+}
+
 void initParams() {
   params.push_back(Param("h264",false,pSetH264));
   params.push_back(Param("hevc",false,pSetHEVC));
@@ -409,6 +424,7 @@ void initParams() {
   params.push_back(Param("vendor",true,pSetVendor));
   params.push_back(Param("busid",true,pSetBusID));
   params.push_back(Param("display",true,pSetDisplay));
+  params.push_back(Param("skip",true,pSetSkip));
 }
 
 // Intel IDs: 8086
@@ -419,17 +435,6 @@ void initParams() {
 // AMD > Intel > OtherVendor > NVIDIA (though it won't work)
 bool initDevices() {
   deviceCount=drmGetDevices2(0,devices,128);
-  
-  /*
-  for (int i=0; i<deviceCount; i++) {
-    logD("- device %d (%.2x:%.2x.%x): vendor %4x\n",i,
-           devices[i]->businfo.pci->bus,
-           devices[i]->businfo.pci->dev,
-           devices[i]->businfo.pci->func,
-           devices[i]->deviceinfo.pci->vendor_id);
-    logD("%s\n",devices[i]->nodes[DRM_NODE_PRIMARY]);
-  }
-  */
   return true;
 }
 
@@ -447,6 +452,7 @@ int main(int argc, char** argv) {
   totalWritten=0;
   bitRate=0;
   bitRatePre=0;
+  fskip=1;
   cacheEmpty=false;
   cacheRun=false;
   noSignal=false;
@@ -724,7 +730,8 @@ int main(int argc, char** argv) {
   }
   stream=avformat_new_stream(out,encInfo);
   stream->id=0;
-  // HACK TODO: ?!?!?!
+  // TODO: possibly change this to 2400
+  //       (for 50, 60, 100, 120 and 144)
   stream->time_base=(AVRational){1,900};
 
   if (out->oformat->flags&AVFMT_GLOBALHEADER)
@@ -794,7 +801,7 @@ int main(int argc, char** argv) {
   
   ioctl(1,TIOCGWINSZ,&winSize);
   while (1) {
-    vblank.request.sequence=startSeq+1;
+    vblank.request.sequence=startSeq+fskip;
     vblank.request.type=DRM_VBLANK_ABSOLUTE;
     
     if (drmWaitVBlank(fd,&vblank)<0) {
@@ -804,7 +811,7 @@ int main(int argc, char** argv) {
       noSignal=false;
     }
     vreply=vblank.reply;
-    startSeq++;
+    startSeq+=fskip;
     if ((vblank.reply.sequence-startSeq)>0) {
       printf("\x1b[2K\x1b[1;33m%d: dropped frame! (%d)\x1b[m\n",frame,recal+1);
       startSeq=vreply.sequence;
@@ -887,7 +894,7 @@ int main(int argc, char** argv) {
       // time
       vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,
       // FPS
-      (delta>=50)?("\x1b[1;32m"):("\x1b[1;33m"),delta,
+      (delta>=(50/fskip))?("\x1b[1;32m"):("\x1b[1;33m"),delta,
       // queue
       (wbWritePos-wbReadPos)>>10,
       // bitrate
