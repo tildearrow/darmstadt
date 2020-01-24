@@ -84,6 +84,8 @@ const char* outname="out.ts";
 
 SyncMethod syncMethod;
 
+AudioType audioType;
+
 struct winsize winSize;
 
 //std::vector<Device> devices;
@@ -98,6 +100,9 @@ int autoDevice;
 float dsScanOff[1024]; size_t dsScanOffPos;
 
 AVRational tb;
+
+// hesse: capture on AMD/Intel, encode on NVIDIA
+bool hesse;
 
 void* cacheThread(void* data) {
   int safeWritePos;
@@ -299,18 +304,26 @@ const char* getVendor(int id) {
     case 2:
       return "AMD";
     case -9001:
-      return "NVIDIA";
+      return "NVIDIA, hesse-only";
   }
   return "Other";
 }
 
 bool pSetH264(string u) {
-  encName="h264_vaapi";
+  if (hesse) {
+    encName="h264_nvenc";
+  } else {
+    encName="h264_vaapi";
+  }
   return true;
 }
 
 bool pSetHEVC(string u) {
-  encName="hevc_vaapi";
+  if (hesse) {
+    encName="hevc_nvenc";
+  } else {
+    encName="hevc_vaapi";
+  }
   return true;
 }
 
@@ -358,6 +371,7 @@ bool pSetDevice(string u) {
   }
   if (devImportance(autoDevice)==-9001) {
     logE("seriously? did you think that would work?\n");
+    logE("NVIDIA is supported in encode-only mode (-hesse).\n");
     return false;
   }
   return true;
@@ -372,6 +386,7 @@ bool pSetVendor(string v) {
     findID=2;
   } else if (v=="NVIDIA") {
     logE("seriously? did you think that would work?\n");
+    logE("NVIDIA is supported in encode-only mode (-hesse).\n");
     return false;
   } else if (v=="Other") {
     findID=0;
@@ -420,6 +435,36 @@ bool pSet444(string u) {
   return true;
 }
 
+bool pSetAudio(string v) {
+  if (v=="none") {
+    audioType=audioTypeNone;
+  } else if (v=="jack") {
+    audioType=audioTypeJACK;
+  } else if (v=="pulse") {
+    audioType=audioTypePulse;
+  } else if (v=="alsa") {
+    audioType=audioTypeALSA;
+  } else {
+    logE("audio: none, jack, pulse or alsa.\n");
+    return false;
+  }
+  return true;
+}
+
+bool pSetAudioDev(string u) {
+  return true;
+}
+
+bool pSetAudioCodec(string u) {
+  return true;
+}
+
+bool pHesse(string u) {
+  hesse=true;
+  encName="h264_nvenc";
+  return true;
+}
+
 void initParams() {
   params.push_back(Param("h264",false,pSetH264));
   params.push_back(Param("hevc",false,pSetHEVC));
@@ -435,6 +480,12 @@ void initParams() {
   params.push_back(Param("busid",true,pSetBusID));
   params.push_back(Param("display",true,pSetDisplay));
   params.push_back(Param("skip",true,pSetSkip));
+  params.push_back(Param("audio",true,pSetAudio));
+  params.push_back(Param("audiodev",true,pSetAudioDev));
+  params.push_back(Param("audiocodec",true,pSetAudioCodec));
+
+  // VA-API -> NVENC codepath
+  params.push_back(Param("hesse",false,pHesse));
 }
 
 // Intel IDs: 8086
@@ -467,6 +518,8 @@ int main(int argc, char** argv) {
   cacheRun=false;
   noSignal=false;
   paused=false;
+  hesse=false;
+  audioType=audioTypeJACK;
   autoDevice=-1;
   brTime=curTime(CLOCK_MONOTONIC);
   
@@ -680,12 +733,21 @@ int main(int argc, char** argv) {
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
   extractSource=(AVHWDeviceContext*)wrappedSource->data;
   
-  logD("creating FFmpeg hardware instance\n");
-  if (av_hwdevice_ctx_create_derived(&ffhardInst, AV_HWDEVICE_TYPE_VAAPI, wrappedSource, 0)<0) {
-    logD("check me later\n");
+  // only do so if not in hesse mode
+  if (!hesse) {
+    logD("creating FFmpeg hardware instance\n");
+    if (av_hwdevice_ctx_create_derived(&ffhardInst, AV_HWDEVICE_TYPE_VAAPI, wrappedSource, 0)<0) {
+      logD("check me later\n");
+    }
+    ((AVVAAPIDeviceContext*)(extractSource->hwctx))->display=vaInst;
+    av_hwdevice_ctx_init(ffhardInst);
+  } else {
+    logD("creating image in memory\n");
+    if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
+      logE("could not create image... %x\n",vaStat);
+      return 1;
+    }
   }
-  ((AVVAAPIDeviceContext*)(extractSource->hwctx))->display=vaInst;
-  av_hwdevice_ctx_init(ffhardInst);
   
   logD("creating encoder\n");
   if ((encInfo=avcodec_find_encoder_by_name(encName.c_str()))==NULL) {
@@ -699,29 +761,29 @@ int main(int argc, char** argv) {
   encoder->time_base=tb;
   //encoder->framerate=(AVRational){1000,1};
   encoder->sample_aspect_ratio=(AVRational){1,1};
-  encoder->pix_fmt=AV_PIX_FMT_VAAPI;
-  logD("setting hwframe ctx\n");
-  /*
-  if (set_hwframe_ctx(encoder,ffhardInst)<0) {
-    printf("could not set hardware to FFmpeg\n");
-    return 1;
-  }*/
+  if (hesse) {
+    encoder->pix_fmt=AV_PIX_FMT_NV12;
+  } else {
+    encoder->pix_fmt=AV_PIX_FMT_VAAPI;
+  }
   
-  hardFrameDataR=av_hwframe_ctx_alloc(ffhardInst);
-  ((AVHWFramesContext*)hardFrameDataR->data)->width=ow;
-  ((AVHWFramesContext*)hardFrameDataR->data)->height=oh;
-  ((AVHWFramesContext*)hardFrameDataR->data)->initial_pool_size = 32;
-  ((AVHWFramesContext*)hardFrameDataR->data)->format=AV_PIX_FMT_VAAPI;
-  ((AVHWFramesContext*)hardFrameDataR->data)->sw_format=AV_PIX_FMT_NV12;
-  av_hwframe_ctx_init(hardFrameDataR);
-  encoder->hw_frames_ctx=hardFrameDataR;
+  // only do so if not in hesse mode
+  if (!hesse) {
+    logD("setting hwframe ctx\n");
+    hardFrameDataR=av_hwframe_ctx_alloc(ffhardInst);
+    ((AVHWFramesContext*)hardFrameDataR->data)->width=ow;
+    ((AVHWFramesContext*)hardFrameDataR->data)->height=oh;
+    // this was 32 but let's see if 2 fixes hang
+    ((AVHWFramesContext*)hardFrameDataR->data)->initial_pool_size = 2;
+    ((AVHWFramesContext*)hardFrameDataR->data)->format=AV_PIX_FMT_VAAPI;
+    ((AVHWFramesContext*)hardFrameDataR->data)->sw_format=AV_PIX_FMT_NV12;
+    av_hwframe_ctx_init(hardFrameDataR);
+    encoder->hw_frames_ctx=hardFrameDataR;
+  }
   
   av_dict_set(&encOpt,"g","40",0);
   av_dict_set(&encOpt,"max_b_frames","0",0);
   av_dict_set(&encOpt,"qp","25",0);
-  
-  /*av_dict_set(&encOpt,"i_qfactor","1",0);
-  av_dict_set(&encOpt,"i_qoffset","10",0);*/
   
   //av_dict_set(&encOpt,"compression_level","15",0);
   
@@ -785,7 +847,11 @@ int main(int argc, char** argv) {
   }
   
   printf("\x1b[1m|\x1b[m\n");
-  printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[m\n");
+  if (hesse) {
+    printf("\x1b[1m|\x1b[34m ~~~~> \x1b[1;35mDARMSTADT (hesse-mode) \x1b[1;36m" DARM_VERSION "\x1b[m\n");
+  } else {
+    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[m\n");
+  }
   printf("\x1b[1m|\x1b[m\n");
   printf("\x1b[1m- screen %dx%d, output %dx%d, 4:2:0\x1b[m\n",dw,dh,ow,oh);
   
@@ -798,7 +864,9 @@ int main(int argc, char** argv) {
   btime=mkts(0,0);
   
   hardFrame=av_frame_alloc();
-  av_hwframe_get_buffer(hardFrameDataR,hardFrame,0);
+  if (!hesse) {
+    av_hwframe_get_buffer(hardFrameDataR,hardFrame,0);
+  }
   
   drmVBlankReply vreply;
   int startSeq;
@@ -977,55 +1045,66 @@ int main(int argc, char** argv) {
       if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
         printf("no surface sync %x\n",vaStat);
       }
+
+    if (hesse) {
+      // HESSE NVENC CODE BEGIN //
+      hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
+      if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+        logW("couldn't get image!\n");
+      }
+      if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
+        logW("oh come on! %x\n",vaStat);
+      }
+      encode_write(encoder,hardFrame,out,stream);
+      if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
+        logE("could not unmap buffer: %x...\n",vaStat);
+      }
+      // HESSE NVENC CODE END //
+    } else {
+      // VA-API ENCODE SINGLE-THREAD CODE BEGIN //
+      hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
+  
+      // convert
+      massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
       
-      // ENCODE SINGLE-THREAD CODE BEGIN //
-    
-    //hardFrame->pts=((vtime.tv_sec*100000+vtime.tv_nsec/10000)*9)/10;
-    
-    hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
-    //printf("pts: %ld\n",hardFrame->pts);
-
-    // convert
-    massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
-    
-    scaleRegion.x=0;
-    scaleRegion.y=0;
-    scaleRegion.width=ow;
-    scaleRegion.height=oh;
-
-    scaler.surface=surface;
-    scaler.surface_region=0;
-    scaler.surface_color_standard=VAProcColorStandardBT709;
-    scaler.output_region=0;
-    scaler.output_background_color=0xff000000;
-    scaler.output_color_standard=VAProcColorStandardBT709;
-    scaler.pipeline_flags=0;
-    scaler.filter_flags=VA_FILTER_SCALING_HQ;
-
-    if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[31]))!=VA_STATUS_SUCCESS) {
-      printf("vaBeginPicture fail: %x\n",vaStat);
-      return 1;
+      scaleRegion.x=0;
+      scaleRegion.y=0;
+      scaleRegion.width=ow;
+      scaleRegion.height=oh;
+  
+      scaler.surface=surface;
+      scaler.surface_region=0;
+      scaler.surface_color_standard=VAProcColorStandardBT709;
+      scaler.output_region=0;
+      scaler.output_background_color=0xff000000;
+      scaler.output_color_standard=VAProcColorStandardBT709;
+      scaler.pipeline_flags=0;
+      scaler.filter_flags=VA_FILTER_SCALING_HQ;
+  
+      if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[1]))!=VA_STATUS_SUCCESS) {
+        printf("vaBeginPicture fail: %x\n",vaStat);
+        return 1;
+      }
+      if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
+        printf("param buffer creation fail: %x\n",vaStat);
+        return 1;
+      }
+      if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
+        printf("vaRenderPicture fail: %x\n",vaStat);
+        return 1;
+      }
+      if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
+        printf("vaEndPicture fail: %x\n",vaStat);
+        return 1;
+      }
+      if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
+        printf("vaDestroyBuffer fail: %x\n",vaStat);
+        return 1;
+      }
+      
+      encode_write(encoder,hardFrame,out,stream);
+      // VA-API ENCODE SINGLE-THREAD CODE END //
     }
-    if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
-      printf("param buffer creation fail: %x\n",vaStat);
-      return 1;
-    }
-    if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
-      printf("vaRenderPicture fail: %x\n",vaStat);
-      return 1;
-    }
-    if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
-      printf("vaEndPicture fail: %x\n",vaStat);
-      return 1;
-    }
-    if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
-      printf("vaDestroyBuffer fail: %x\n",vaStat);
-      return 1;
-    }
-    
-    encode_write(encoder,hardFrame,out,stream);
-
-    // ENCODE SINGLE-THREAD CODE END //
     //av_frame_free(&hardFrame);
     
 

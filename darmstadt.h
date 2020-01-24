@@ -61,6 +61,8 @@
 #include <string>
 #include <queue>
 
+#include <jack/jack.h>
+
 #include "ta-log.h"
 
 // METHOD 1: use our own method for capture, and FFmpeg for encode
@@ -97,6 +99,13 @@ enum SyncMethod {
   syncTimer
 };
 
+enum AudioType {
+  audioTypeNone=0,
+  audioTypeJACK,
+  audioTypePulse,
+  audioTypeALSA
+};
+
 struct qFrame {
   long fd;
   unsigned int format, pitch;
@@ -125,6 +134,30 @@ struct Param {
   bool value;
   bool (*func)(string);
   Param(string n, bool v, bool (*f)(string)): name(n), value(v), func(f) {}
+};
+
+struct AudioPacket {
+  struct timespec time;
+  // 1024 samples. up to 8 channels.
+  float data[8192];
+};
+
+class AudioEngine {
+  public:
+    // read an audio packet. returns NULL if there aren't any.
+    virtual AudioPacket* read();
+    virtual bool start();
+    virtual bool init(string devName);
+};
+
+class JACKAudioEngine: public AudioEngine {
+  jack_client_t* ac;
+  jack_port_t* ao[8];
+  string name;
+  public:
+    AudioPacket* read();
+    bool start();
+    bool init(string devName);
 };
 
 int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);
