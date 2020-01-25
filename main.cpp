@@ -51,6 +51,8 @@ unsigned char* addr;
 unsigned long portedFD;
 struct timespec tStart, tEnd;
 
+// VIDEO //
+AVStream* stream;
 AVCodecContext* encoder;
 AVCodec* encInfo;
 AVFrame* hardFrame;
@@ -62,8 +64,13 @@ AVFrame* hardFrameRT;
 AVVAAPIFramesContext* massAbbrev;
 AVDictionary* encOpt;
 
+// AUDIO //
+AVStream* audStream;
+AVCodecContext* audEncoder;
+AVCodec* audEncInfo;
+AVFrame* audFrame;
+
 AVFormatContext* out;
-AVStream* stream;
 
 #define DARM_WRITEBUF_SIZE (1L<<24)
 #define DARM_AVIO_BUFSIZE 131072
@@ -85,6 +92,7 @@ const char* outname="out.ts";
 SyncMethod syncMethod;
 
 AudioType audioType;
+AudioEngine* ae;
 
 struct winsize winSize;
 
@@ -102,7 +110,7 @@ float dsScanOff[1024]; size_t dsScanOffPos;
 AVRational tb;
 
 // hesse: capture on AMD/Intel, encode on NVIDIA
-bool hesse;
+bool hesse, absolPerf;
 
 void* cacheThread(void* data) {
   int safeWritePos;
@@ -215,7 +223,7 @@ static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *
     av_init_packet(&enc_pkt);
     midTimeS=curTime(CLOCK_MONOTONIC);
     if ((ret = avcodec_send_frame(avctx, frame)) < 0) {
-        fprintf(stderr, "Error code: %d\n",ret);
+        logW("couldn't write frame! %s\n",strerror(-ret));
         goto end;
     }
     //midTimeE=curTime(CLOCK_MONOTONIC); printf("midTime: %s\n",tstos(midTimeE-midTimeS).c_str());
@@ -432,6 +440,11 @@ bool pSet10Bit(string u) {
 }
 
 bool pSet444(string u) {
+  if (!hesse) {
+    logE("4:4:4 chroma subsampling only available for NVIDIA Maxwell (and newer) cards on hesse mode.\n");
+    return false;
+  }
+  absolPerf=true;
   return true;
 }
 
@@ -519,6 +532,7 @@ int main(int argc, char** argv) {
   noSignal=false;
   paused=false;
   hesse=false;
+  absolPerf=false;
   audioType=audioTypeJACK;
   autoDevice=-1;
   brTime=curTime(CLOCK_MONOTONIC);
@@ -743,10 +757,6 @@ int main(int argc, char** argv) {
     av_hwdevice_ctx_init(ffhardInst);
   } else {
     logD("creating image in memory\n");
-    if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
-      logE("could not create image... %x\n",vaStat);
-      return 1;
-    }
   }
   
   logD("creating encoder\n");
@@ -762,7 +772,7 @@ int main(int argc, char** argv) {
   //encoder->framerate=(AVRational){1000,1};
   encoder->sample_aspect_ratio=(AVRational){1,1};
   if (hesse) {
-    encoder->pix_fmt=AV_PIX_FMT_NV12;
+    encoder->pix_fmt=AV_PIX_FMT_BGR0;
   } else {
     encoder->pix_fmt=AV_PIX_FMT_VAAPI;
   }
@@ -781,15 +791,41 @@ int main(int argc, char** argv) {
     encoder->hw_frames_ctx=hardFrameDataR;
   }
   
-  av_dict_set(&encOpt,"g","40",0);
+  if (hesse) {
+    av_dict_set(&encOpt,"g","90",0);
+  } else {
+    av_dict_set(&encOpt,"g","40",0);
+  }
   av_dict_set(&encOpt,"max_b_frames","0",0);
-  av_dict_set(&encOpt,"qp","25",0);
+  av_dict_set(&encOpt,"qp","26",0);
+  
+  if (hesse) {
+    if (absolPerf) {
+      av_dict_set(&encOpt,"profile","high444p",0);
+    }
+  }
   
   //av_dict_set(&encOpt,"compression_level","15",0);
   
   if ((avcodec_open2(encoder,encInfo,&encOpt))<0) {
     logE("could not open encoder :(\n");
     return 1;
+  }
+  
+  // init audio
+  ae=new JACKAudioEngine;
+  if (!ae->init("")) {
+    logW("couldn't init audio.\n");
+    audioType=audioTypeNone;
+  } else {
+    if ((audEncInfo=avcodec_find_encoder_by_name("pcm_s16le"))==NULL) {
+      logE("audio codec not found D:\n");
+      return 1;
+    }
+    audEncoder=avcodec_alloc_context3(audEncInfo);
+    audEncoder->sample_fmt=AV_SAMPLE_FMT_FLTP;
+    audEncoder->sample_rate=ae->sampleRate();
+    audEncoder->channels=ae->channels();
   }
   
   // create stream
@@ -853,7 +889,7 @@ int main(int argc, char** argv) {
     printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[m\n");
   }
   printf("\x1b[1m|\x1b[m\n");
-  printf("\x1b[1m- screen %dx%d, output %dx%d, 4:2:0\x1b[m\n",dw,dh,ow,oh);
+  printf("\x1b[1m- screen %dx%d, output %dx%d, %s\x1b[m\n",dw,dh,ow,oh,absolPerf?("4:4:4"):("4:2:0"));
   
   logI("recording!\n");
   
@@ -864,8 +900,23 @@ int main(int argc, char** argv) {
   btime=mkts(0,0);
   
   hardFrame=av_frame_alloc();
+  if (!hardFrame) {
+    logE("couldn't allocate frame!\n");
+    return 1;
+  }
+  
   if (!hesse) {
     av_hwframe_get_buffer(hardFrameDataR,hardFrame,0);
+  } else {
+    // initialize the frame ourselves
+    hardFrame->format=AV_PIX_FMT_BGR0;
+    hardFrame->width=ow;
+    hardFrame->height=oh;
+    retv=av_frame_get_buffer(hardFrame,0);
+    if (retv<0) {
+      logE("couldn't allocate frame data!\n");
+      return 1;
+    }
   }
   
   drmVBlankReply vreply;
@@ -879,6 +930,7 @@ int main(int argc, char** argv) {
   int recal=0;
   
   ioctl(1,TIOCGWINSZ,&winSize);
+  if (audioType!=audioTypeNone) ae->start();
   while (1) {
     vblank.request.sequence=startSeq+fskip;
     vblank.request.type=DRM_VBLANK_ABSOLUTE;
@@ -956,11 +1008,11 @@ int main(int argc, char** argv) {
       // queue
       "\x1b[mqueue: \x1b[1m%5dK "
       // bitrate
-      "\x1b[mrate: %s%6dKbit "
+      "\x1b[mrate: %s%6ldKbit "
       // size
-      "\x1b[msize: \x1b[1m%dM"
+      "\x1b[msize: \x1b[1m%ldM"
       // end
-      "\x1b[m\x1b[%d;1H\n",
+      "\x1b[m\x1b[%d;1H\n\n",
       
       // ARGUMENTS
       winSize.ws_row,
@@ -1049,15 +1101,23 @@ int main(int argc, char** argv) {
     if (hesse) {
       // HESSE NVENC CODE BEGIN //
       hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
+      if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
+        logE("could not create image... %x\n",vaStat);
+        break;
+      }
       if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
         logW("couldn't get image!\n");
       }
       if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
         logW("oh come on! %x\n",vaStat);
       }
+      hardFrame->data[0]=addr;
       encode_write(encoder,hardFrame,out,stream);
       if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
         logE("could not unmap buffer: %x...\n",vaStat);
+      }
+      if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
+        logE("could not destroy image %x\n",vaStat);
       }
       // HESSE NVENC CODE END //
     } else {
@@ -1117,6 +1177,16 @@ int main(int argc, char** argv) {
     close(primefd);
     drmModeFreeFB(fb);
     drmModeFreePlane(plane);
+    
+    // AUDIO CODE BEGIN //
+    if (audioType!=audioTypeNone) {
+      AudioPacket* audioPack;
+      while ((audioPack=ae->read())!=NULL) {
+        logD("read one packet. write out.\n");
+      }
+    }
+    // AUDIO CODE END //
+    
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
     tEnd=curTime(CLOCK_MONOTONIC);
     //printf("%s\n",tstos(tEnd-tStart).c_str());

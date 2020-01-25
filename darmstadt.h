@@ -75,7 +75,7 @@ extern "C" {
 
 #define DEVICE_PATH "/dev/dri/card1"
 
-#define DARM_VERSION "v1.3pre"
+#define DARM_VERSION "v2.0pre"
 
 #define S(x) std::string(x)
 typedef std::string string;
@@ -146,18 +146,29 @@ class AudioEngine {
   public:
     // read an audio packet. returns NULL if there aren't any.
     virtual AudioPacket* read();
+    virtual int sampleRate();
+    virtual int channels();
     virtual bool start();
     virtual bool init(string devName);
 };
 
 class JACKAudioEngine: public AudioEngine {
   jack_client_t* ac;
-  jack_port_t* ao[8];
+  jack_port_t* ai[8];
+  jack_status_t as;
+  int chan;
   string name;
+  string devName;
+  int collPos;
+  AudioPacket ap;
+  std::queue<AudioPacket*> apqueue;
   public:
     AudioPacket* read();
+    int process(jack_nframes_t count);
+    int sampleRate();
+    int channels();
     bool start();
-    bool init(string devName);
+    bool init(string dn);
 };
 
 int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);
