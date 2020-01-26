@@ -69,6 +69,8 @@ AVStream* audStream;
 AVCodecContext* audEncoder;
 AVCodec* audEncInfo;
 AVFrame* audFrame;
+AVDictionary* audEncOpt;
+AVPacket audPacket;
 
 AVFormatContext* out;
 
@@ -812,22 +814,6 @@ int main(int argc, char** argv) {
     return 1;
   }
   
-  // init audio
-  ae=new JACKAudioEngine;
-  if (!ae->init("")) {
-    logW("couldn't init audio.\n");
-    audioType=audioTypeNone;
-  } else {
-    if ((audEncInfo=avcodec_find_encoder_by_name("pcm_s16le"))==NULL) {
-      logE("audio codec not found D:\n");
-      return 1;
-    }
-    audEncoder=avcodec_alloc_context3(audEncInfo);
-    audEncoder->sample_fmt=AV_SAMPLE_FMT_FLTP;
-    audEncoder->sample_rate=ae->sampleRate();
-    audEncoder->channels=ae->channels();
-  }
-  
   // create stream
   avformat_alloc_output_context2(&out,NULL,NULL,outname);
   if (out==NULL) {
@@ -844,6 +830,73 @@ int main(int argc, char** argv) {
         encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
   avcodec_parameters_from_context(stream->codecpar,encoder);
+  
+  // init audio
+  ae=new JACKAudioEngine;
+  if (!ae->init("")) {
+    logW("couldn't init audio.\n");
+    audioType=audioTypeNone;
+  } else {
+    if ((audEncInfo=avcodec_find_encoder_by_name("pcm_f32le"))==NULL) {
+      logE("audio codec not found D:\n");
+      return 1;
+    }
+    audEncoder=avcodec_alloc_context3(audEncInfo);
+    audEncoder->sample_fmt=audEncInfo->sample_fmts?audEncInfo->sample_fmts[0]:AV_SAMPLE_FMT_FLTP;
+    audEncoder->sample_rate=ae->sampleRate();
+    audEncoder->channels=ae->channels();
+    switch (audEncoder->channels) {
+      case 1:
+        audEncoder->channel_layout=AV_CH_LAYOUT_MONO;
+        break;
+      case 2:
+        audEncoder->channel_layout=AV_CH_LAYOUT_STEREO;
+        break;
+      case 3:
+        audEncoder->channel_layout=AV_CH_LAYOUT_2POINT1;
+        break;
+      case 4:
+        audEncoder->channel_layout=AV_CH_LAYOUT_QUAD;
+        break;
+      case 5:
+        audEncoder->channel_layout=AV_CH_LAYOUT_5POINT0;
+        break;
+      case 6:
+        audEncoder->channel_layout=AV_CH_LAYOUT_5POINT1;
+        break;
+      case 7:
+        audEncoder->channel_layout=AV_CH_LAYOUT_7POINT0;
+        break;
+      case 8:
+        audEncoder->channel_layout=AV_CH_LAYOUT_7POINT1;
+        break;
+    }
+    if ((avcodec_open2(audEncoder,audEncInfo,&audEncOpt))<0) {
+      logE("could not open encoder :(\n");
+      return 1;
+    }
+    
+    audStream=avformat_new_stream(out,encInfo);
+    audStream->id=1;
+    audStream->time_base=(AVRational){1,audEncoder->sample_rate};
+    if (out->oformat->flags&AVFMT_GLOBALHEADER) {
+      printf("global h\n");
+      audEncoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+    avcodec_parameters_from_context(audStream->codecpar,audEncoder);
+    
+    audFrame=av_frame_alloc();
+    if (audFrame==NULL) {
+      logE("couldn't allocate audio frame!\n");
+    }
+    audFrame->format=AV_SAMPLE_FMT_FLTP;
+    audFrame->channel_layout=audEncoder->channel_layout;
+    audFrame->sample_rate=audEncoder->sample_rate;
+    audFrame->nb_samples=1024;
+    audFrame->pts=0;
+    av_frame_get_buffer(audFrame,0);
+  }
+  
   //av_dump_format(out,0,outname,1);
   
   if ((f=fopen(outname,"wb"))==NULL) {
@@ -1183,6 +1236,32 @@ int main(int argc, char** argv) {
       AudioPacket* audioPack;
       while ((audioPack=ae->read())!=NULL) {
         logD("read one packet. write out.\n");
+        memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
+        logD("after.\n");
+        audPacket.data=NULL;
+        audPacket.size=0;
+        av_init_packet(&audPacket);
+        if (avcodec_send_frame(audEncoder,audFrame)<0) {
+          logW("couldn't write audio frame!\n");
+          break;
+        }
+        while (1) {
+          if (avcodec_receive_packet(audEncoder,&audPacket)) break;
+          audPacket.stream_index=1;
+          audStream->cur_dts=audFrame->pts;
+          //av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
+          audStream->cur_dts=audPacket.pts-1;
+          audFrame->pts+=1024;
+          if (av_interleaved_write_frame(out,&audPacket)<0) {
+            printf("unable to write frame");
+          }
+          avformat_flush(out);
+          avio_flush(out->pb);
+          if ((wtEnd-wtStart)>mkts(0,16666667)) {
+            printf("\x1b[1;32mWARNING! audio write took too long :( (%dµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+          }
+          av_packet_unref(&audPacket);
+        }
       }
     }
     // AUDIO CODE END //
