@@ -240,7 +240,7 @@ static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *
         av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
         str->cur_dts = enc_pkt.pts-1;
         wtStart=curTime(CLOCK_MONOTONIC);
-        if (av_interleaved_write_frame(fout,&enc_pkt)<0) {
+        if (av_write_frame(fout,&enc_pkt)<0) {
           printf("unable to write frame");
 }
         avformat_flush(fout);
@@ -926,6 +926,7 @@ int main(int argc, char** argv) {
   }
 
   writeBuf=new char[DARM_WRITEBUF_SIZE];
+  
   if (!(out->oformat->flags & AVFMT_NOFILE)) {
     unsigned char* ioBuffer=(unsigned char*)av_malloc(DARM_AVIO_BUFSIZE+AV_INPUT_BUFFER_PADDING_SIZE);
     AVIOContext* avioContext=avio_alloc_context(ioBuffer,DARM_AVIO_BUFSIZE,1,(void*)(f),NULL, &writeToCache,&seekCache);
@@ -1274,7 +1275,7 @@ int main(int argc, char** argv) {
           //av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
           audStream->cur_dts=audPacket.pts-1;
           audFrame->pts+=1024;
-          if (av_interleaved_write_frame(out,&audPacket)<0) {
+          if (av_write_frame(out,&audPacket)<0) {
             printf("unable to write frame");
           }
           avformat_flush(out);
