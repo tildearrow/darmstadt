@@ -167,6 +167,7 @@ int writeToCache(void* data, unsigned char* buf, int size) {
   }
   wbWritePos+=size;
   wbWritePos&=DARM_WRITEBUF_SIZE-1;
+  printf("writing to cache\n");
   totalWritten+=size;
   bitRatePre+=size;
   if ((curTime(CLOCK_MONOTONIC)-brTime)>mkts(0,250000000)) {
@@ -233,7 +234,7 @@ static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *
         ret = avcodec_receive_packet(avctx, &enc_pkt);
         if (ret)
             break;
-        enc_pkt.stream_index = 0;
+        enc_pkt.stream_index = str->index;
         str->cur_dts = frame->pts-1;
         //enc_pkt.pts = frame->pts;
         av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
@@ -538,6 +539,7 @@ int main(int argc, char** argv) {
   audioType=audioTypeJACK;
   autoDevice=-1;
   brTime=curTime(CLOCK_MONOTONIC);
+  tb=(AVRational){1,100000};
   
   encName="hevc_vaapi";
 
@@ -604,7 +606,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // open card
+  // DRM INIT BEGIN //
   logI("selected device %s.\n",devices[autoDevice]->nodes[DRM_NODE_PRIMARY]);
   
   // set environment (workaround for X11)
@@ -702,7 +704,9 @@ int main(int argc, char** argv) {
   if (planeres) drmModeFreePlaneResources(planeres);
   if (plane) drmModeFreePlane(plane);
   if (fb) drmModeFreeFB(fb);
+  // DRM INIT END //
   
+  // VA-API INIT BEGIN //
   if (devImportance(autoDevice)==1) {
     vaInst=vaGetDisplayDRM(renderfd);
   } else {
@@ -760,24 +764,46 @@ int main(int argc, char** argv) {
   } else {
     logD("creating image in memory\n");
   }
+  // VA-API INIT END //
   
+  // FFMPEG INIT BEGIN //
+  // open file
+  avformat_alloc_output_context2(&out,NULL,NULL,outname);
+  if (out==NULL) {
+    logE("couldn't open output...\n");
+    return 1;
+  }
+  
+  /// Video
   logD("creating encoder\n");
+  // create stream
   if ((encInfo=avcodec_find_encoder_by_name(encName.c_str()))==NULL) {
     logE("your card does not support %s.\n",encName.c_str());
     return 1;
   }
-  tb=(AVRational){1,100000};
+  
+  stream=avformat_new_stream(out,NULL);
+  stream->id=out->nb_streams-1;
+  // TODO: possibly change this to 2400
+  //       (for 50, 60, 100, 120 and 144)
+  stream->time_base=(AVRational){1,900};
+  
   encoder=avcodec_alloc_context3(encInfo);
+  
+  encoder->codec_id=encInfo->id;
   encoder->width=ow;
   encoder->height=oh;
   encoder->time_base=tb;
   //encoder->framerate=(AVRational){1000,1};
   encoder->sample_aspect_ratio=(AVRational){1,1};
   if (hesse) {
+    encoder->gop_size=90;
     encoder->pix_fmt=AV_PIX_FMT_BGR0;
   } else {
+    encoder->gop_size=40;
     encoder->pix_fmt=AV_PIX_FMT_VAAPI;
   }
+  encoder->max_b_frames=0;
   
   // only do so if not in hesse mode
   if (!hesse) {
@@ -793,12 +819,6 @@ int main(int argc, char** argv) {
     encoder->hw_frames_ctx=hardFrameDataR;
   }
   
-  if (hesse) {
-    av_dict_set(&encOpt,"g","90",0);
-  } else {
-    av_dict_set(&encOpt,"g","40",0);
-  }
-  av_dict_set(&encOpt,"max_b_frames","0",0);
   av_dict_set(&encOpt,"qp","26",0);
   
   if (hesse) {
@@ -807,33 +827,12 @@ int main(int argc, char** argv) {
     }
   }
   
-  //av_dict_set(&encOpt,"compression_level","15",0);
-  
-  if ((avcodec_open2(encoder,encInfo,&encOpt))<0) {
-    logE("could not open encoder :(\n");
-    return 1;
-  }
-  
-  // create stream
-  avformat_alloc_output_context2(&out,NULL,NULL,outname);
-  if (out==NULL) {
-    logE("couldn't open output...\n");
-    return 1;
-  }
-  stream=avformat_new_stream(out,encInfo);
-  stream->id=0;
-  // TODO: possibly change this to 2400
-  //       (for 50, 60, 100, 120 and 144)
-  stream->time_base=(AVRational){1,900};
-
   if (out->oformat->flags&AVFMT_GLOBALHEADER)
-        encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-
-  avcodec_parameters_from_context(stream->codecpar,encoder);
+    encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
   
-  // init audio
+  /// Audio
   ae=new JACKAudioEngine;
-  if (!ae->init("")) {
+  if ((audioType==audioTypeNone) || !ae->init("")) {
     logW("couldn't init audio.\n");
     audioType=audioTypeNone;
   } else {
@@ -841,10 +840,16 @@ int main(int argc, char** argv) {
       logE("audio codec not found D:\n");
       return 1;
     }
+    
+    audStream=avformat_new_stream(out,NULL);
+    audStream->id=out->nb_streams-1;
+    
     audEncoder=avcodec_alloc_context3(audEncInfo);
     audEncoder->sample_fmt=audEncInfo->sample_fmts?audEncInfo->sample_fmts[0]:AV_SAMPLE_FMT_FLTP;
     audEncoder->sample_rate=ae->sampleRate();
     audEncoder->channels=ae->channels();
+    audEncoder->time_base=(AVRational){1,audEncoder->sample_rate};
+    audStream->time_base=(AVRational){1,audEncoder->sample_rate};
     switch (audEncoder->channels) {
       case 1:
         audEncoder->channel_layout=AV_CH_LAYOUT_MONO;
@@ -871,17 +876,25 @@ int main(int argc, char** argv) {
         audEncoder->channel_layout=AV_CH_LAYOUT_7POINT1;
         break;
     }
-    if ((avcodec_open2(audEncoder,audEncInfo,&audEncOpt))<0) {
-      logE("could not open encoder :(\n");
-      return 1;
-    }
     
-    audStream=avformat_new_stream(out,encInfo);
-    audStream->id=1;
-    audStream->time_base=(AVRational){1,audEncoder->sample_rate};
     if (out->oformat->flags&AVFMT_GLOBALHEADER) {
       printf("global h\n");
       audEncoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+  }
+  
+  // Open Video
+  if ((avcodec_open2(encoder,encInfo,&encOpt))<0) {
+    logE("could not open encoder :(\n");
+    return 1;
+  }
+  avcodec_parameters_from_context(stream->codecpar,encoder);
+  
+  // Open Audio
+  if (audioType!=audioTypeNone) {
+    if ((avcodec_open2(audEncoder,audEncInfo,&audEncOpt))<0) {
+      logE("could not open encoder :(\n");
+      return 1;
     }
     avcodec_parameters_from_context(audStream->codecpar,audEncoder);
     
@@ -889,13 +902,21 @@ int main(int argc, char** argv) {
     if (audFrame==NULL) {
       logE("couldn't allocate audio frame!\n");
     }
-    audFrame->format=AV_SAMPLE_FMT_FLTP;
+    audFrame->format=audEncoder->sample_fmt;
     audFrame->channel_layout=audEncoder->channel_layout;
-    audFrame->sample_rate=audEncoder->sample_rate;
-    audFrame->nb_samples=1024;
+    if (audEncInfo->capabilities&AV_CODEC_CAP_VARIABLE_FRAME_SIZE) {
+      audFrame->nb_samples=1024;
+    } else {
+      audFrame->nb_samples=audEncoder->frame_size;
+    }
+    printf("format: %d\n",audFrame->format);
     audFrame->pts=0;
-    av_frame_get_buffer(audFrame,0);
+    if (av_frame_get_buffer(audFrame,0)<0) {
+      logE("are you being serious?\n");
+      return 1;
+    }
   }
+
   
   //av_dump_format(out,0,outname,1);
   
@@ -918,6 +939,7 @@ int main(int argc, char** argv) {
     logE("could not write header... %s\n",e);
     return 1;
   }
+  // FFMPEG INIT END //
 
   sigaction(SIGINT,&saTerm,NULL);
   sigaction(SIGTERM,&saTerm,NULL);
@@ -1236,7 +1258,7 @@ int main(int argc, char** argv) {
       AudioPacket* audioPack;
       while ((audioPack=ae->read())!=NULL) {
         logD("read one packet. write out.\n");
-        memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
+        memcpy(audFrame->data[0],audioPack->data,1024/**ae->channels()*sizeof(float)*/);
         logD("after.\n");
         audPacket.data=NULL;
         audPacket.size=0;
@@ -1247,7 +1269,7 @@ int main(int argc, char** argv) {
         }
         while (1) {
           if (avcodec_receive_packet(audEncoder,&audPacket)) break;
-          audPacket.stream_index=1;
+          audPacket.stream_index=audStream->index;
           audStream->cur_dts=audFrame->pts;
           //av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
           audStream->cur_dts=audPacket.pts-1;
@@ -1266,6 +1288,9 @@ int main(int argc, char** argv) {
     }
     // AUDIO CODE END //
     
+    // HACK: force flush
+    //av_interleaved_write_frame(out,NULL);
+    
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
     tEnd=curTime(CLOCK_MONOTONIC);
     //printf("%s\n",tstos(tEnd-tStart).c_str());
@@ -1276,6 +1301,7 @@ int main(int argc, char** argv) {
     if (quit) break;
   }
 
+  printf("it crashes here\n");
   if (av_write_trailer(out)<0) {
     logW("could not finish file...\n");
   }
