@@ -114,7 +114,7 @@ AVRational tb;
 // hesse: capture on AMD/Intel, encode on NVIDIA
 bool hesse, absolPerf;
 
-void* cacheThread(void* data) {
+void* cacheThread(void*) {
   int safeWritePos;
   cacheRun=true;
   while (1) {
@@ -152,7 +152,7 @@ void* cacheThread(void* data) {
   return NULL;
 }
 
-int writeToCache(void* data, unsigned char* buf, int size) {
+int writeToCache(void*, unsigned char* buf, int size) {
   if (!cacheRun) {
     fwrite(buf,1,size,f);
     return size;
@@ -188,7 +188,7 @@ void waitForCache() {
   }
 }
 
-int64_t seekCache(void* data, int64_t off, int whence) {
+int64_t seekCache(void*, int64_t off, int whence) {
   // flush cache, then seek on file.
   waitForCache();
   logD("\x1b[1;35mSEEKING, %ld\x1b[m\n",off);
@@ -199,7 +199,7 @@ int64_t seekCache(void* data, int64_t off, int whence) {
   return off;
 }
 
-void* unbuff(void* data) {
+void* unbuff(void*) {
   qFrame f;
   
   while (1) {
@@ -219,17 +219,14 @@ void* unbuff(void* data) {
 static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout, AVStream* str)
 {
     int ret = 0;
-    struct timespec midTimeS, midTimeE;
     AVPacket enc_pkt;
     enc_pkt.data = NULL;
     enc_pkt.size = 0;
     av_init_packet(&enc_pkt);
-    midTimeS=curTime(CLOCK_MONOTONIC);
     if ((ret = avcodec_send_frame(avctx, frame)) < 0) {
         logW("couldn't write frame! %s\n",strerror(-ret));
         goto end;
     }
-    //midTimeE=curTime(CLOCK_MONOTONIC); printf("midTime: %s\n",tstos(midTimeE-midTimeS).c_str());
     while (1) {
         ret = avcodec_receive_packet(avctx, &enc_pkt);
         if (ret)
@@ -247,7 +244,7 @@ static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *
         avio_flush(fout->pb);
         wtEnd=curTime(CLOCK_MONOTONIC);
         if ((wtEnd-wtStart)>mkts(0,16666667)) {
-          printf("\x1b[1;32mWARNING! write took too long :( (%dµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+          printf("\x1b[1;32mWARNING! write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
         }
         av_packet_unref(&enc_pkt);
     }
@@ -257,7 +254,7 @@ end:
 }
 
 bool needsValue(string param) {
-  for (int i=0; i<params.size(); i++) {
+  for (size_t i=0; i<params.size(); i++) {
     if (params[i].name==param) {
       return params[i].value;
     }
@@ -273,7 +270,7 @@ void makeGraph(int x, int y, int w, int h, bool center, float* dataset, size_t d
   rMin=-1; rMax=1;
   
   // Calculate Min/Max
-  for (int i=start; i!=((start+w)%dsize); i=(i+1)%dsize) {
+  for (size_t i=start; i!=((start+w)%dsize); i=(i+1)%dsize) {
     if (dataset[i]<rMin) rMin=dataset[i];
     if (dataset[i]>rMax) rMax=dataset[i];
   }
@@ -288,11 +285,11 @@ void makeGraph(int x, int y, int w, int h, bool center, float* dataset, size_t d
   }
 }
 
-void handleTerm(int data) {
+void handleTerm(int) {
   quit=true;
 }
 
-void handleWinCh(int data) {
+void handleWinCh(int) {
   newSize=true;
 }
 
@@ -320,7 +317,7 @@ const char* getVendor(int id) {
   return "Other";
 }
 
-bool pSetH264(string u) {
+bool pSetH264(string) {
   if (hesse) {
     encName="h264_nvenc";
   } else {
@@ -329,7 +326,7 @@ bool pSetH264(string u) {
   return true;
 }
 
-bool pSetHEVC(string u) {
+bool pSetHEVC(string) {
   if (hesse) {
     encName="hevc_nvenc";
   } else {
@@ -338,27 +335,27 @@ bool pSetHEVC(string u) {
   return true;
 }
 
-bool pSetMJPEG(string u) {
+bool pSetMJPEG(string) {
   encName="mjpeg_vaapi";
   return true;
 }
 
-bool pSetMPEG2(string u) {
+bool pSetMPEG2(string) {
   encName="mpeg2_vaapi";
   return true;
 }
 
-bool pSetVP8(string u) {
+bool pSetVP8(string) {
   encName="vp8_vaapi";
   return true;
 }
 
-bool pSetVP9(string u) {
+bool pSetVP9(string) {
   encName="vp9_vaapi";
   return true;
 }
 
-bool pListDevices(string u) {
+bool pListDevices(string) {
   for (int i=0; i<deviceCount; i++) {
     printf("- device %d (%s) (%.2x:%.2x.%x): %s\n",i,getVendor(i),
            devices[i]->businfo.pci->bus,
@@ -416,11 +413,11 @@ bool pSetVendor(string v) {
   return false;
 }
 
-bool pSetBusID(string u) {
+bool pSetBusID(string) {
   return true;
 }
 
-bool pSetDisplay(string u) {
+bool pSetDisplay(string) {
   return true;
 }
 
@@ -438,11 +435,11 @@ bool pSetSkip(string u) {
   return true;
 }
 
-bool pSet10Bit(string u) {
+bool pSet10Bit(string) {
   return true;
 }
 
-bool pSet444(string u) {
+bool pSet444(string) {
   if (!hesse) {
     logE("4:4:4 chroma subsampling only available for NVIDIA Maxwell (and newer) cards on hesse mode.\n");
     return false;
@@ -467,15 +464,15 @@ bool pSetAudio(string v) {
   return true;
 }
 
-bool pSetAudioDev(string u) {
+bool pSetAudioDev(string) {
   return true;
 }
 
-bool pSetAudioCodec(string u) {
+bool pSetAudioCodec(string) {
   return true;
 }
 
-bool pHesse(string u) {
+bool pHesse(string) {
   hesse=true;
   encName="h264_nvenc";
   return true;
@@ -576,7 +573,7 @@ int main(int argc, char** argv) {
         arg=arg.substr(0,eqSplit);
       }
       //printf("arg %s. val %s\n",arg.c_str(),val.c_str());
-      for (int j=0; j<params.size(); j++) {
+      for (size_t j=0; j<params.size(); j++) {
         if (params[j].name==arg) {
           if (!params[j].func(val)) return 1;
           break;
@@ -650,11 +647,6 @@ int main(int argc, char** argv) {
   planeres=drmModeGetPlaneResources(fd);
   if (planeres==NULL) {
     logE("i have to tell you... that I am unable to get plane resources...\n");
-    return 1;
-  }
-  
-  if (planeres->count_planes<0) {
-    logE("no planes. there are helicopters instead...\n");
     return 1;
   }
   
@@ -1280,7 +1272,7 @@ int main(int argc, char** argv) {
           avformat_flush(out);
           avio_flush(out->pb);
           if ((wtEnd-wtStart)>mkts(0,16666667)) {
-            printf("\x1b[1;32mWARNING! audio write took too long :( (%dµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+            printf("\x1b[1;32mWARNING! audio write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
           }
           av_packet_unref(&audPacket);
         }
@@ -1331,7 +1323,7 @@ int main(int argc, char** argv) {
   } else {
     for (int i=0; i<120; i++) {
       if (speeds[i]>0) {
-        printf("%d FPS: %d (%.2f%)\n",i,speeds[i],100.0*((double)speeds[i]/(double)(frame-2)));
+        printf("%d FPS: %d (%.2f%%)\n",i,speeds[i],100.0*((double)speeds[i]/(double)(frame-2)));
       }
     }
   }
