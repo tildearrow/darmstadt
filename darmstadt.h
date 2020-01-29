@@ -63,6 +63,8 @@
 
 #include <jack/jack.h>
 
+#include <pulse/simple.h>
+
 #include "ta-log.h"
 
 // METHOD 1: use our own method for capture, and FFmpeg for encode
@@ -169,6 +171,10 @@ class JACKAudioEngine: public AudioEngine {
     int channels();
     bool start();
     bool init(string dn);
+};
+
+class PulseAudioEngine: public AudioEngine {
+  pa_simple* ac;
 };
 
 int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);
