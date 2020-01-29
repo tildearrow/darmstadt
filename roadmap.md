@@ -14,16 +14,13 @@
 
 # roadmap
 
-## v1.3
+## v2.0
 
 - even more frame perfection
 - command line options
 - should work on intel
-- public release
-
-## v2.0
-
 - audio recording
+- public release
 
 ## v3.0
 
