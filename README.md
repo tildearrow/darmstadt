@@ -1,6 +1,6 @@
 # darmstadt
 
-this is an experimental Linux full-hardware screen recorder for AMD cards.
+this is an experimental Linux full-hardware screen recorder for AMD and Intel cards.
 
 the purpose of this program is to alleviate some issues with FFmpeg when trying to record using kmsgrab and the hardware encoder (such as stutter).
 
@@ -16,8 +16,6 @@ the purpose of this program is to alleviate some issues with FFmpeg when trying 
 
 no, this is not complete yet or tested on an environment that is not my Vega FE. sorry.
 maybe it can work on your setup, but is very doubtful. if it does however, please tell me.
-
-no, this won't work on Intel because for some reason Intel likes providing wrong timestamps. this will be worked on though.
 
 no, this won't work on NVIDIA either, of course. wait for röntgen-mode and maybe you get a chance (but I doubt because NVIDIA is so greedy with their NVFBC restrictions).
 however you can use NVIDIA for encoding the AMD/Intel capture in hesse-mode. see [hesse.md](hesse.md) for more information.
