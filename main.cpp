@@ -1258,9 +1258,8 @@ int main(int argc, char** argv) {
     if (audioType!=audioTypeNone) {
       AudioPacket* audioPack;
       while ((audioPack=ae->read())!=NULL) {
-        logD("read one packet. write out.\n");
-        memcpy(audFrame->data[0],audioPack->data,1024/**ae->channels()*sizeof(float)*/);
-        logD("after.\n");
+        //logD("read one packet. write out.\n");
+        memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
         audPacket.data=NULL;
         audPacket.size=0;
         av_init_packet(&audPacket);
@@ -1274,7 +1273,7 @@ int main(int argc, char** argv) {
           audStream->cur_dts=audFrame->pts;
           //av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
           audStream->cur_dts=audPacket.pts-1;
-          audFrame->pts+=1024;
+          audFrame->pts=100+hardFrame->pts/100;
           if (av_write_frame(out,&audPacket)<0) {
             printf("unable to write frame");
           }
