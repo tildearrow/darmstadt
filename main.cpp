@@ -165,9 +165,9 @@ int writeToCache(void*, unsigned char* buf, int size) {
   } else {
     memcpy(writeBuf+wbWritePos,buf,size);
   }
+  logD("cache: %dK\n",(wbWritePos-wbReadPos+size)>>10);
   wbWritePos+=size;
   wbWritePos&=DARM_WRITEBUF_SIZE-1;
-  printf("writing to cache\n");
   totalWritten+=size;
   bitRatePre+=size;
   if ((curTime(CLOCK_MONOTONIC)-brTime)>mkts(0,250000000)) {
@@ -1281,7 +1281,7 @@ int main(int argc, char** argv) {
     // AUDIO CODE END //
     
     // HACK: force flush
-    //av_interleaved_write_frame(out,NULL);
+    av_write_frame(out,NULL);
     
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
     tEnd=curTime(CLOCK_MONOTONIC);
