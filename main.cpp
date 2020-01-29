@@ -825,7 +825,9 @@ int main(int argc, char** argv) {
   /// Audio
   ae=new JACKAudioEngine;
   if ((audioType==audioTypeNone) || !ae->init("")) {
-    logW("couldn't init audio.\n");
+    if (audioType!=audioTypeNone) {
+      logW("couldn't init audio.\n");
+    }
     audioType=audioTypeNone;
   } else {
     if ((audEncInfo=avcodec_find_encoder_by_name("pcm_f32le"))==NULL) {
