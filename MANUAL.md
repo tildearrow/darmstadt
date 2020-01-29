@@ -1,7 +1,3 @@
-# not yet
-
-the -h264 and -hevc options do nothing at the moment. the program only uses HEVC for now.
-
 # operator's manual
 
 ## prerequisites/recommendations
