@@ -1281,7 +1281,7 @@ int main(int argc, char** argv) {
     // AUDIO CODE END //
     
     // HACK: force flush
-    av_write_frame(out,NULL);
+    //av_write_frame(out,NULL);
     
     //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
     tEnd=curTime(CLOCK_MONOTONIC);
