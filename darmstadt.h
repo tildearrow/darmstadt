@@ -68,7 +68,6 @@
 
 #include "ta-log.h"
 
-// METHOD 1: use our own method for capture, and FFmpeg for encode
 extern "C" {
   #include <libavcodec/avcodec.h>
   #include <libavformat/avformat.h>
@@ -191,4 +190,31 @@ class PulseAudioEngine: public AudioEngine {
     int channels();
     bool start();
     bool init(string dn);
+};
+
+enum CacheCommands {
+  cCommandWrite=0,
+  cCommandSeek,
+  cCommandRead // ???
+};
+
+struct CacheCommand {
+  CacheCommands cmd;
+  char* buf;
+  int size, whence;
+};
+
+class WriteCache {
+  FILE* o;
+  bool running, shallStop;
+  std::queue<CacheCommand> cqueue;
+  public:
+    void* run();
+
+    int write(void* buf, size_t len);
+    int seek(int pos, int whence);
+    bool flush();
+    void setFile(FILE* f);
+    bool enable();
+    bool disable();
 };
