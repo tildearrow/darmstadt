@@ -5,13 +5,16 @@ void* WriteCache::run() {
   do {
     usleep(50000);
     while (!cqueue.empty()) {
-      cc=cqueue.back();
+      busy=true;
+      cc=cqueue.front();
       cqueue.pop();
       switch (cc.cmd) {
         case cWrite:
+          printf("cache write %ld\n",cc.size);
           fwrite(cc.buf,1,cc.size,o);
           break;
         case cSeek:
+          printf("cache seek %ld\n",cc.size);
           fseek(o,cc.size,cc.whence);
           break;
         case cRead:
@@ -20,29 +23,31 @@ void* WriteCache::run() {
           break;
       }
     }
+    busy=false;
   } while (!shallStop);
   return NULL;
 }
 
-int WriteCache::write(void* buf, size_t len) {
-  char* nbuf;
+int WriteCache::write(unsigned char* buf, size_t len) {
+  unsigned char* nbuf;
+  printf("write %ld\n",len);
   if (!running) {
     return fwrite(buf,1,len,o);
   }
 
   // i hope memory allocs are fast
-  nbuf=new char[len];
+  nbuf=new unsigned char[len];
   memcpy(nbuf,buf,len);
   cqueue.push(CacheCommand(cWrite,nbuf,len,0));
   return len;
 }
 
-int WriteCache::seek(int pos, int whence) {
+int WriteCache::seek(ssize_t pos, int whence) {
   if (!running) {
     return fseek(o,pos,whence);
   }
   cqueue.push(CacheCommand(cSeek,NULL,pos,whence));
-  return pos;
+  return 0;
 }
 
 bool WriteCache::flush() {
@@ -75,11 +80,15 @@ bool WriteCache::enable() {
 }
 
 bool WriteCache::disable() {
+  void* unused;
   if (running) {
     shallStop=true;
-    flush();
+    pthread_join(tid,&unused);
     running=false;
     return true;
   }
   return false;
+}
+
+WriteCache::WriteCache(): o(NULL), running(false), shallStop(false), busy(false), tid(-1) {
 }

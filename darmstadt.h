@@ -200,9 +200,10 @@ enum CacheCommands {
 
 struct CacheCommand {
   CacheCommands cmd;
-  char* buf;
-  int size, whence;
-  CacheCommand(CacheCommands c, char* b, int s, int w): cmd(c), buf(b), size(s), whence(w) {}
+  unsigned char* buf;
+  ssize_t size;
+  int whence;
+  CacheCommand(CacheCommands c, unsigned char* b, int s, int w): cmd(c), buf(b), size(s), whence(w) {}
   CacheCommand() {}
 };
 
@@ -214,10 +215,11 @@ class WriteCache {
   public:
     void* run();
 
-    int write(void* buf, size_t len);
-    int seek(int pos, int whence);
+    int write(unsigned char* buf, size_t len);
+    int seek(ssize_t pos, int whence);
     bool flush();
     void setFile(FILE* f);
     bool enable();
     bool disable();
+    WriteCache();
 };

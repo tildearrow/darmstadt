@@ -82,6 +82,7 @@ char* writeBuf;
 int wbReadPos, wbWritePos;
 long int totalWritten, bitRate, bitRatePre;
 bool cacheEmpty, cacheRun;
+WriteCache cache;
 struct timespec brTime;
 
 AVDictionary* badCodingPractice=NULL;
@@ -117,89 +118,23 @@ AVRational audiotb;
 // hesse: capture on AMD/Intel, encode on NVIDIA
 bool hesse, absolPerf;
 
-void* cacheThread(void*) {
-  int safeWritePos;
-  cacheRun=true;
-  while (1) {
-    safeWritePos=wbWritePos;
-    if (wbReadPos!=safeWritePos) {
-      if (safeWritePos<wbReadPos) {
-        // ring buffer crossed
-        fwrite(writeBuf+wbReadPos,1,DARM_WRITEBUF_SIZE-wbReadPos,f);
-        fwrite(writeBuf,1,safeWritePos,f);
-      } else {
-        fwrite(writeBuf+wbReadPos,1,safeWritePos-wbReadPos,f);
-      }
-    }
-    wbReadPos=safeWritePos;
-    cacheEmpty=true;
-    usleep(50000);
-    if (quit) break;
-  }
-  // write remaining
-  safeWritePos=wbWritePos;
-  if (wbReadPos!=safeWritePos) {
-    if (safeWritePos<wbReadPos) {
-      // ring buffer crossed
-      printf("WARNING: writebuf crossed\n");
-      fwrite(writeBuf+wbReadPos,1,DARM_WRITEBUF_SIZE-wbReadPos,f);
-      fwrite(writeBuf,1,safeWritePos,f);
-    } else {
-      fwrite(writeBuf+wbReadPos,1,safeWritePos-wbReadPos,f);
-    }
-  }
-  wbReadPos=safeWritePos;
-  cacheEmpty=true;
-  cacheRun=false;
-  
-  return NULL;
-}
-
 int writeToCache(void*, unsigned char* buf, int size) {
-  if (!cacheRun) {
-    fwrite(buf,1,size,f);
-    return size;
-  }
-  cacheEmpty=false;
-  if ((wbWritePos+size)>(DARM_WRITEBUF_SIZE-1)) {
-    // ring buffer
-    memcpy(writeBuf+wbWritePos,buf,(DARM_WRITEBUF_SIZE)-wbWritePos);
-    memcpy(writeBuf,buf+((DARM_WRITEBUF_SIZE)-wbWritePos),(wbWritePos+size)-(DARM_WRITEBUF_SIZE));
-  } else {
-    memcpy(writeBuf+wbWritePos,buf,size);
-  }
-  logD("cache: %dK\n",(wbWritePos-wbReadPos+size)>>10);
-  wbWritePos+=size;
-  wbWritePos&=DARM_WRITEBUF_SIZE-1;
-  totalWritten+=size;
   bitRatePre+=size;
-  if ((curTime(CLOCK_MONOTONIC)-brTime)>mkts(0,250000000)) {
+  if ((curTime(CLOCK_MONOTONIC)-brTime)>mkts(2,0)) {
     brTime=curTime(CLOCK_MONOTONIC);
-    bitRate=bitRatePre*4*8;
+    bitRate=bitRatePre*8/2;
     bitRatePre=0;
   }
-  return size;
-}
-
-void waitForCache() {
-  //printf("waiting for cache!\n");
-  if (!cacheRun) {
-    return;
-  }
-  while (!cacheEmpty) {
-    usleep(1000);
-  }
+  return cache.write(buf,size);
 }
 
 int64_t seekCache(void*, int64_t off, int whence) {
-  // flush cache, then seek on file.
-  waitForCache();
-  logD("\x1b[1;35mSEEKING, %ld\x1b[m\n",off);
-  fseek(f,off,whence);
-  if (whence == AVSEEK_SIZE) {
+  if (whence==AVSEEK_SIZE) {
+    cache.seek(0,SEEK_END);
     return -1;
   }
-  return off;
+  cache.seek(off,whence);
+  return 0;
 }
 
 void* unbuff(void*) {
@@ -514,6 +449,78 @@ bool pHelp(string) {
   return false;
 }
 
+bool hesseBench(string u) {
+  char* image[3];
+  int size;
+  struct timespec bBegin, bEnd, bDelta;
+  double delta;
+
+  logI("running hesse overhead benchmark!\n");
+
+  // 1080p
+  logI("1080p...\n");
+  size=1920*1080*4;
+  for (int i=0; i<3; i++) {
+    image[i]=new char[size];
+  }
+  bBegin=curTime(CLOCK_MONOTONIC);
+  for (int i=0; i<1920; i++) {
+    memcpy(image[1],image[0],size);
+    memcpy(image[2],image[1],size);
+  }
+  bEnd=curTime(CLOCK_MONOTONIC);
+  for (int i=0; i<3; i++) {
+    delete[] image[i];
+  }
+
+  bDelta=bEnd-bBegin;
+  delta=bDelta.tv_sec+bDelta.tv_nsec/1000000000.0;
+  logI("%.2f%% overhead (%.0f max FPS).\n",(60.0/(1920.0/delta))*100.0,(1920.0/delta));
+
+  // 4K
+  logI("2160p...\n");
+  size=3840*2160*4;
+  for (int i=0; i<3; i++) {
+    image[i]=new char[size];
+  }
+  bBegin=curTime(CLOCK_MONOTONIC);
+  for (int i=0; i<480; i++) {
+    memcpy(image[1],image[0],size);
+    memcpy(image[2],image[1],size);
+  }
+  bEnd=curTime(CLOCK_MONOTONIC);
+  for (int i=0; i<3; i++) {
+    delete[] image[i];
+  }
+
+  bDelta=bEnd-bBegin;
+  delta=bDelta.tv_sec+bDelta.tv_nsec/1000000000.0;
+  logI("%.2f%% overhead (%.0f max FPS).\n",(60.0/(480.0/delta))*100.0,(480.0/delta));
+
+  // 8K
+  logI("4320p...\n");
+  size=7680*4320*4;
+  for (int i=0; i<3; i++) {
+    image[i]=new char[size];
+  }
+  bBegin=curTime(CLOCK_MONOTONIC);
+  for (int i=0; i<120; i++) {
+    memcpy(image[1],image[0],size);
+    memcpy(image[2],image[1],size);
+  }
+  bEnd=curTime(CLOCK_MONOTONIC);
+  for (int i=0; i<3; i++) {
+    delete[] image[i];
+  }
+
+  bDelta=bEnd-bBegin;
+  delta=bDelta.tv_sec+bDelta.tv_nsec/1000000000.0;
+  logI("%.2f%% overhead (%.0f max FPS).\n",(60.0/(120.0/delta))*100.0,(120.0/delta));
+
+  logI("done. exiting.\n");
+  return false;
+}
+
 void initParams() {
   params.push_back(Param("help",false,pHelp,"","display this help"));
 
@@ -537,6 +544,7 @@ void initParams() {
 
   // VA-API -> NVENC codepath
   params.push_back(Param("hesse",false,pHesse,"","enable hesse mode (use AMD/Intel card for capture and NVIDIA card for encoding)"));
+  params.push_back(Param("hessebench",false,hesseBench,"","benchmark hesse overhead"));
 }
 
 // Intel IDs: 8086
@@ -995,8 +1003,10 @@ int main(int argc, char** argv) {
   
   if (!(out->oformat->flags & AVFMT_NOFILE)) {
     unsigned char* ioBuffer=(unsigned char*)av_malloc(DARM_AVIO_BUFSIZE+AV_INPUT_BUFFER_PADDING_SIZE);
-    AVIOContext* avioContext=avio_alloc_context(ioBuffer,DARM_AVIO_BUFSIZE,1,(void*)(f),NULL, &writeToCache,&seekCache);
+    cache.setFile(f);
+    AVIOContext* avioContext=avio_alloc_context(ioBuffer,DARM_AVIO_BUFSIZE,1,(void*)(f),NULL,&writeToCache,&seekCache);
     out->pb=avioContext;
+    cache.enable();
   }
 
   int retv;
@@ -1018,11 +1028,6 @@ int main(int argc, char** argv) {
   
   wbReadPos=0;
   wbWritePos=0;
-
-  if (pthread_create(&thr,NULL,cacheThread,NULL)<0) {
-    logE("could not create encoding thread...\n");
-    return 1;
-  }
   
   printf("\x1b[1m|\x1b[m\n");
   if (hesse) {
@@ -1374,7 +1379,7 @@ int main(int argc, char** argv) {
   }
   
   logD("finishing output...\n");
-  pthread_join(thr,&badCodingPractice1);
+  cache.disable();
 
   av_free(out->pb->buffer);
   fclose(f);

@@ -93,7 +93,7 @@ AudioPacket* JACKAudioEngine::read() {
   if (apqueue.empty()) {
     return NULL;
   } else {
-    ret=apqueue.back();
+    ret=apqueue.front();
     apqueue.pop();
     return ret;
   }
