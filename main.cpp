@@ -1268,6 +1268,7 @@ int main(int argc, char** argv) {
       while ((audioPack=ae->read())!=NULL) {
         //logD("read one packet. write out.\n");
         memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
+        delete audioPack;
         audPacket.data=NULL;
         audPacket.size=0;
         av_init_packet(&audPacket);
