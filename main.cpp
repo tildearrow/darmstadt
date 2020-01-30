@@ -7,11 +7,13 @@ int fd, primefd, renderfd;
 drmModePlaneRes* planeres;
 drmModePlane* plane;
 drmModeFB* fb;
+drmModeCrtc* disp;
 drmVBlank vblank;
 
 unsigned int planeid;
 
 int frame;
+int framerate;
 struct timespec btime, vtime, dtime;
 
 struct timespec wtStart, wtEnd;
@@ -337,22 +339,42 @@ bool pSetHEVC(string) {
 }
 
 bool pSetMJPEG(string) {
-  encName="mjpeg_vaapi";
+  if (hesse) {
+    logE("NVIDIA cards do not support MJPEG encoding.\n");
+    return false;
+  } else {
+    encName="mjpeg_vaapi";
+  }
   return true;
 }
 
 bool pSetMPEG2(string) {
-  encName="mpeg2_vaapi";
+  if (hesse) {
+    logE("NVIDIA cards do not support MPEG-2 encoding.\n");
+    return false;
+  } else {
+    encName="mpeg2_vaapi";
+  }
   return true;
 }
 
 bool pSetVP8(string) {
-  encName="vp8_vaapi";
+  if (hesse) {
+    logE("NVIDIA cards do not support VP8 encoding.\n");
+    return false;
+  } else {
+    encName="vp8_vaapi";
+  }
   return true;
 }
 
 bool pSetVP9(string) {
-  encName="vp9_vaapi";
+  if (hesse) {
+    logE("NVIDIA cards do not support VP9 encoding.\n");
+    return false;
+  } else {
+    encName="vp9_vaapi";
+  }
   return true;
 }
 
@@ -479,27 +501,42 @@ bool pHesse(string) {
   return true;
 }
 
+bool pHelp(string) {
+  printf("usage: darmstadt [params] [filename]\n\n"
+         "parameter list:\n");
+  for (auto& i: params) {
+    if (i.value) {
+      printf("-%s %s: %s\n",i.name.c_str(),i.valName.c_str(),i.desc.c_str());
+    } else {
+      printf("-%s: %s\n",i.name.c_str(),i.desc.c_str());
+    }
+  }
+  return false;
+}
+
 void initParams() {
-  params.push_back(Param("h264",false,pSetH264));
-  params.push_back(Param("hevc",false,pSetHEVC));
-  params.push_back(Param("mjpeg",false,pSetMJPEG));
-  params.push_back(Param("mpeg2",false,pSetMPEG2));
-  params.push_back(Param("vp8",false,pSetVP8));
-  params.push_back(Param("vp9",false,pSetVP9));
-  params.push_back(Param("10bit",false,pSet10Bit));
-  params.push_back(Param("absoluteperfection",false,pSet444));
-  params.push_back(Param("listdevices",false,pListDevices));
-  params.push_back(Param("device",true,pSetDevice));
-  params.push_back(Param("vendor",true,pSetVendor));
-  params.push_back(Param("busid",true,pSetBusID));
-  params.push_back(Param("display",true,pSetDisplay));
-  params.push_back(Param("skip",true,pSetSkip));
-  params.push_back(Param("audio",true,pSetAudio));
-  params.push_back(Param("audiodev",true,pSetAudioDev));
-  params.push_back(Param("audiocodec",true,pSetAudioCodec));
+  params.push_back(Param("help",false,pHelp,"","display this help"));
+
+  params.push_back(Param("h264",false,pSetH264,"","set video codec to H.264"));
+  params.push_back(Param("hevc",false,pSetHEVC,"","set video codec to H.265/HEVC"));
+  params.push_back(Param("mjpeg",false,pSetMJPEG,"","set video codec to MJPEG (not useful)"));
+  params.push_back(Param("mpeg2",false,pSetMPEG2,"","set video codec to MPEG-2"));
+  params.push_back(Param("vp8",false,pSetVP8,"","set video codec to VP8"));
+  params.push_back(Param("vp9",false,pSetVP9,"","set video codec to VP9"));
+  params.push_back(Param("10bit",false,pSet10Bit,"","use 10-bit pixel format"));
+  params.push_back(Param("absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
+  params.push_back(Param("listdevices",false,pListDevices,"","list available devices"));
+  params.push_back(Param("device",true,pSetDevice,"index","select device"));
+  params.push_back(Param("vendor",true,pSetVendor,"AMD|Intel","select device by vendor"));
+  params.push_back(Param("busid",true,pSetBusID,"xx:yy.z","select device by PCI bus ID"));
+  params.push_back(Param("display",true,pSetDisplay,"name","select display to record"));
+  params.push_back(Param("skip",true,pSetSkip,"value","set frameskip value"));
+  params.push_back(Param("audio",true,pSetAudio,"jack|pulse|alsa|none","set audio engine (none disables audio recording)"));
+  params.push_back(Param("audiodev",true,pSetAudioDev,"name","set audio capture device"));
+  params.push_back(Param("audiocodec",true,pSetAudioCodec,"codec","set audio codec"));
 
   // VA-API -> NVENC codepath
-  params.push_back(Param("hesse",false,pHesse));
+  params.push_back(Param("hesse",false,pHesse,"","enable hesse mode (use AMD/Intel card for capture and NVIDIA card for encoding)"));
 }
 
 // Intel IDs: 8086
@@ -527,6 +564,7 @@ int main(int argc, char** argv) {
   totalWritten=0;
   bitRate=0;
   bitRatePre=0;
+  framerate=0;
   fskip=1;
   cacheEmpty=false;
   cacheRun=false;
@@ -539,7 +577,7 @@ int main(int argc, char** argv) {
   brTime=curTime(CLOCK_MONOTONIC);
   tb=(AVRational){1,100000};
   
-  encName="hevc_vaapi";
+  encName="";
 
   initParams();
 
@@ -674,6 +712,15 @@ int main(int argc, char** argv) {
     logE("no displays available. can't record.\n");
     return 1;
   }
+
+  disp=drmModeGetCrtc(fd,plane->crtc_id);
+  if (disp==NULL) {
+    logE("could not retrieve display info...\n");
+    return 1;
+  }
+
+  framerate=disp->mode.vrefresh;
+  logD("refresh rate: %d\n",framerate);
   
   fb=drmModeGetFB(fd,plane->fb_id);
   if (fb==NULL) {
@@ -690,6 +737,15 @@ int main(int argc, char** argv) {
   
   dw=fb->width;
   dh=fb->height;
+
+  if (encName=="") {
+    // 2880x1800 = 5.1 megapixels
+    if (dw*dh>=5184000) {
+      encName="hevc_vaapi";
+    } else {
+      encName="h264_vaapi";
+    }
+  }
   
   ow=dw;
   oh=dh;
@@ -787,7 +843,9 @@ int main(int argc, char** argv) {
   encoder->width=ow;
   encoder->height=oh;
   encoder->time_base=tb;
-  //encoder->framerate=(AVRational){1000,1};
+  if (framerate>0) {
+    encoder->framerate=(AVRational){framerate,fskip};
+  }
   encoder->sample_aspect_ratio=(AVRational){1,1};
   if (hesse) {
     encoder->gop_size=90;

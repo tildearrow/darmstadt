@@ -10,7 +10,7 @@ the purpose of this program is to alleviate some issues with FFmpeg when trying 
 - very low CPU overhead
 - stutter-free if your card is fast enough
 - synchronizes with your display, even if you were to change the refresh rate
-- records JACK audio as well
+- records audio as well (JACK and PulseAudio supported)
 
 # warning
 
