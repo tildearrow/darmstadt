@@ -192,5 +192,3 @@ class PulseAudioEngine: public AudioEngine {
     bool start();
     bool init(string dn);
 };
-
-int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);
