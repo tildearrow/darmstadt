@@ -193,20 +193,23 @@ class PulseAudioEngine: public AudioEngine {
 };
 
 enum CacheCommands {
-  cCommandWrite=0,
-  cCommandSeek,
-  cCommandRead // ???
+  cWrite=0,
+  cSeek,
+  cRead // ???
 };
 
 struct CacheCommand {
   CacheCommands cmd;
   char* buf;
   int size, whence;
+  CacheCommand(CacheCommands c, char* b, int s, int w): cmd(c), buf(b), size(s), whence(w) {}
+  CacheCommand() {}
 };
 
 class WriteCache {
   FILE* o;
-  bool running, shallStop;
+  bool running, shallStop, busy;
+  pthread_t tid;
   std::queue<CacheCommand> cqueue;
   public:
     void* run();
