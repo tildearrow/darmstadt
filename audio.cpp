@@ -1,11 +1,11 @@
 #include "darmstadt.h"
 
 bool AudioEngine::init(string devName) {
-  return true;
+  return false;
 }
 
 bool AudioEngine::start() {
-  return true;
+  return false;
 }
 
 AudioPacket* AudioEngine::read() {

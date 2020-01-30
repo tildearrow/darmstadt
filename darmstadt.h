@@ -63,6 +63,7 @@
 
 #include <jack/jack.h>
 
+#include <pulse/error.h>
 #include <pulse/simple.h>
 
 #include "ta-log.h"
@@ -175,6 +176,19 @@ class JACKAudioEngine: public AudioEngine {
 
 class PulseAudioEngine: public AudioEngine {
   pa_simple* ac;
+  pa_sample_spec asf;
+  int as;
+  pthread_t tid;
+  AudioPacket ap;
+  string devName;
+  std::queue<AudioPacket*> apqueue;
+  public:
+    AudioPacket* read();
+    void* thr();
+    int sampleRate();
+    int channels();
+    bool start();
+    bool init(string dn);
 };
 
 int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx);

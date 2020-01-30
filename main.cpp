@@ -824,7 +824,20 @@ int main(int argc, char** argv) {
     encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
   
   /// Audio
-  ae=new JACKAudioEngine;
+  switch (audioType) {
+    case audioTypeJACK:
+      ae=new JACKAudioEngine;
+      break;
+    case audioTypePulse:
+      ae=new PulseAudioEngine;
+      break;
+    case audioTypeNone:
+      break;
+    default:
+      logE("this audio type is not implemented yet!\n");
+      return 1;
+      break;
+  }
   if ((audioType==audioTypeNone) || !ae->init("")) {
     if (audioType!=audioTypeNone) {
       logW("couldn't init audio.\n");
@@ -1297,7 +1310,6 @@ int main(int argc, char** argv) {
     if (quit) break;
   }
 
-  printf("it crashes here\n");
   if (av_write_trailer(out)<0) {
     logW("could not finish file...\n");
   }
