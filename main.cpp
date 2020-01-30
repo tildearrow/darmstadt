@@ -110,6 +110,7 @@ int autoDevice;
 float dsScanOff[1024]; size_t dsScanOffPos;
 
 AVRational tb;
+AVRational audiotb;
 
 // hesse: capture on AMD/Intel, encode on NVIDIA
 bool hesse, absolPerf;
@@ -1082,7 +1083,7 @@ int main(int argc, char** argv) {
       // size
       "\x1b[msize: \x1b[1m%ldM"
       // end
-      "\x1b[m\x1b[%d;1H\n\n",
+      "\x1b[m\x1b[%d;1H\n",
       
       // ARGUMENTS
       winSize.ws_row,
@@ -1257,6 +1258,7 @@ int main(int argc, char** argv) {
         audPacket.data=NULL;
         audPacket.size=0;
         av_init_packet(&audPacket);
+        audFrame->pts+=1024;
         if (avcodec_send_frame(audEncoder,audFrame)<0) {
           logW("couldn't write audio frame!\n");
           break;
@@ -1264,10 +1266,10 @@ int main(int argc, char** argv) {
         while (1) {
           if (avcodec_receive_packet(audEncoder,&audPacket)) break;
           audPacket.stream_index=audStream->index;
-          audStream->cur_dts=audFrame->pts;
-          //av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
-          audStream->cur_dts=audPacket.pts-1;
-          audFrame->pts=100+hardFrame->pts/100;
+          //audStream->cur_dts=audFrame->pts;
+          av_packet_rescale_ts(&audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
+          audStream->cur_dts=audPacket.pts;
+          //printf("tb: %d/%d dts: %ld\n",audStream->time_base.num,audStream->time_base.den,audStream->cur_dts);
           if (av_write_frame(out,&audPacket)<0) {
             printf("unable to write frame");
           }
