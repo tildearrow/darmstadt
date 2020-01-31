@@ -2,7 +2,7 @@
 
 this is an experimental Linux full-hardware screen recorder for AMD and Intel cards.
 
-the purpose of this program is to alleviate some issues with FFmpeg when trying to record using kmsgrab and the hardware encoder (such as stutter).
+the purpose of this program is to alleviate some issues with FFmpeg when trying to record using kmsgrab and the hardware encoder (such as stutter). somebody finally [reported](https://trac.ffmpeg.org/ticket/8377) the issue ~9 months after this project's initial private release.
 
 ## features
 
