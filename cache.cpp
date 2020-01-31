@@ -10,11 +10,10 @@ void* WriteCache::run() {
       cqueue.pop();
       switch (cc.cmd) {
         case cWrite:
-          printf("cache write %ld\n",cc.size);
           fwrite(cc.buf,1,cc.size,o);
+          delete[] cc.buf;
           break;
         case cSeek:
-          printf("cache seek %ld\n",cc.size);
           fseek(o,cc.size,cc.whence);
           break;
         case cRead:
@@ -30,7 +29,6 @@ void* WriteCache::run() {
 
 int WriteCache::write(unsigned char* buf, size_t len) {
   unsigned char* nbuf;
-  printf("write %ld\n",len);
   if (!running) {
     return fwrite(buf,1,len,o);
   }
