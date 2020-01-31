@@ -30,7 +30,7 @@ bool JACKAudioEngine::init(string dn) {
   string portName;
   chan=0;
   collPos=0;  
-  ac=jack_client_open("darmstadt",JackNullOption,&as,NULL);
+  ac=jack_client_open("darmstadt",JackNoStartServer,&as,NULL);
   if (ac==NULL) {
     logW("JACK server not running or something.\n");
     return false;

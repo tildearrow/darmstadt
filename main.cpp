@@ -440,9 +440,9 @@ bool pHelp(string) {
          "parameter list:\n");
   for (auto& i: params) {
     if (i.value) {
-      printf("-%s %s: %s\n",i.name.c_str(),i.valName.c_str(),i.desc.c_str());
+      printf("  -%s %s: %s\n",i.name.c_str(),i.valName.c_str(),i.desc.c_str());
     } else {
-      printf("-%s: %s\n",i.name.c_str(),i.desc.c_str());
+      printf("  -%s: %s\n",i.name.c_str(),i.desc.c_str());
     }
   }
   return false;
@@ -520,6 +520,38 @@ bool hesseBench(string u) {
   return false;
 }
 
+bool pSetVideoSize(string) {
+  return true;
+}
+
+bool pSetVideoCrop(string) {
+  return true;
+}
+
+bool pSetVideoScale(string) {
+  return true;
+}
+
+bool pSetCursor(string) {
+  return true;
+}
+
+bool pSetQuality(string) {
+  return true;
+}
+
+bool pSetBitRate(string) {
+  return true;
+}
+
+bool pSetEncSpeed(string) {
+  return true;
+}
+
+bool pSetGOP(string) {
+  return true;
+}
+
 void initParams() {
   params.push_back(Param("help",false,pHelp,"","display this help"));
 
@@ -540,6 +572,14 @@ void initParams() {
   params.push_back(Param("audio",true,pSetAudio,"jack|pulse|alsa|none","set audio engine (none disables audio recording)"));
   params.push_back(Param("audiodev",true,pSetAudioDev,"name","set audio capture device"));
   params.push_back(Param("audiocodec",true,pSetAudioCodec,"codec","set audio codec"));
+  params.push_back(Param("size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
+  params.push_back(Param("crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
+  params.push_back(Param("scale",true,pSetVideoScale,"fit|fill|orig","set scaling method"));
+  params.push_back(Param("cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay"));
+  params.push_back(Param("quality",true,pSetQuality,"0-50","set quality (less is better)"));
+  params.push_back(Param("bitrate",true,pSetBitRate,"value","set bitrate (in Kbps)"));
+  params.push_back(Param("speed",true,pSetEncSpeed,"quality|balanced|speed","set encoder quality/speed tradeoff (if supported)"));
+  params.push_back(Param("keyinterval",true,pSetGOP,"frames","set interval between intra-frames (keyframes)"));
 
   // VA-API -> NVENC codepath
   params.push_back(Param("hesse",false,pHesse,"","enable hesse mode (use AMD/Intel card for capture and NVIDIA card for encoding)"));
@@ -745,17 +785,17 @@ int main(int argc, char** argv) {
   dw=fb->width;
   dh=fb->height;
 
+  ow=dw;
+  oh=dh;
+
   if (encName=="") {
     // 2880x1800 = 5.1 megapixels
-    if (dw*dh>=5184000) {
+    if (ow*oh>=5184000) {
       encName="hevc_vaapi";
     } else {
       encName="h264_vaapi";
     }
-  }
-  
-  ow=dw;
-  oh=dh;
+  }  
   
   if (planeres) drmModeFreePlaneResources(planeres);
   if (plane) drmModeFreePlane(plane);
@@ -951,7 +991,6 @@ int main(int argc, char** argv) {
     }
     
     if (out->oformat->flags&AVFMT_GLOBALHEADER) {
-      printf("global h\n");
       audEncoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
   }
