@@ -13,12 +13,15 @@ bool PulseAudioEngine::init(string dn) {
   if (dn=="") {
     catcher=popen("pactl list | grep 'Monitor Source' | sed -r 's/^.+: //'","r");
     if (catcher!=NULL) {
-      fgets(tDevName,4095,catcher);
-      pclose(catcher);
-      
-      devName=tDevName;
-      devName.erase(devName.end()-1);
-      logD("using device %s.\n",devName.c_str());
+      if (fgets(tDevName,4095,catcher)==NULL) {
+        pclose(catcher);
+      } else {
+        pclose(catcher);
+        
+        devName=tDevName;
+        devName.erase(devName.end()-1);
+        logD("using device %s.\n",devName.c_str());
+      }
     }
   } else {
     devName=dn;
@@ -71,4 +74,8 @@ void* PulseAudioEngine::thr() {
     apqueue.push(new AudioPacket(ap));
   }
   return NULL;
+}
+
+const char* PulseAudioEngine::engineName() {
+  return "PulseAudio";
 }

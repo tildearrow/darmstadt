@@ -76,7 +76,6 @@ AVPacket audPacket;
 
 AVFormatContext* out;
 
-#define DARM_WRITEBUF_SIZE (1L<<24)
 #define DARM_AVIO_BUFSIZE 131072
 char* writeBuf;
 int wbReadPos, wbWritePos;
@@ -990,16 +989,11 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
-
-  
-  //av_dump_format(out,0,outname,1);
   
   if ((f=fopen(outname,"wb"))==NULL) {
     perror("could not open output file");
     return 1;
   }
-
-  writeBuf=new char[DARM_WRITEBUF_SIZE];
   
   if (!(out->oformat->flags & AVFMT_NOFILE)) {
     unsigned char* ioBuffer=(unsigned char*)av_malloc(DARM_AVIO_BUFSIZE+AV_INPUT_BUFFER_PADDING_SIZE);
@@ -1037,6 +1031,9 @@ int main(int argc, char** argv) {
   }
   printf("\x1b[1m|\x1b[m\n");
   printf("\x1b[1m- screen %dx%d, output %dx%d, %s\x1b[m\n",dw,dh,ow,oh,absolPerf?("4:4:4"):("4:2:0"));
+  if (audioType!=audioTypeNone) {
+    printf("\x1b[1m- audio from %s, %dHz (%d channels)\n",ae->engineName(),ae->sampleRate(),ae->channels());
+  }
   
   logI("recording!\n");
   

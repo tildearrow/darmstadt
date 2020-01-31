@@ -106,3 +106,7 @@ int JACKAudioEngine::sampleRate() {
 int JACKAudioEngine::channels() {
   return chan;
 }
+
+const char* JACKAudioEngine::engineName() {
+  return "JACK";
+}

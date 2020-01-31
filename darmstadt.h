@@ -154,6 +154,7 @@ class AudioEngine {
     virtual int channels();
     virtual bool start();
     virtual bool init(string devName);
+    virtual const char* engineName();
 };
 
 class JACKAudioEngine: public AudioEngine {
@@ -173,6 +174,7 @@ class JACKAudioEngine: public AudioEngine {
     int channels();
     bool start();
     bool init(string dn);
+    const char* engineName();
 };
 
 class PulseAudioEngine: public AudioEngine {
@@ -190,6 +192,7 @@ class PulseAudioEngine: public AudioEngine {
     int channels();
     bool start();
     bool init(string dn);
+    const char* engineName();
 };
 
 enum CacheCommands {

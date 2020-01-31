@@ -19,3 +19,7 @@ int AudioEngine::sampleRate() {
 int AudioEngine::channels() {
   return 1;
 }
+
+const char* AudioEngine::engineName() {
+  return "Invalid";
+}
