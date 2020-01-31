@@ -14,6 +14,8 @@ the purpose of this program is to alleviate some issues with FFmpeg when trying 
 
 # warning
 
+**recording at 1080p in AMD cards outputs at 1920x1088 for some weird reason. I will fix this.**
+
 no, this is not complete yet or tested on an environment that is not my Vega FE. sorry.
 maybe it can work on your setup, but is very doubtful. if it does however, please tell me.
 
