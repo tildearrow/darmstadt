@@ -132,12 +132,19 @@ struct Device {
 };
 
 struct Param {
+  string shortName;
   string name;
   string valName;
   string desc;
   bool value;
   bool (*func)(string);
-  Param(string n, bool v, bool (*f)(string), string vn, string d): name(n), valName(vn), desc(d), value(v), func(f) {}
+  Param(string sn, string n, bool v, bool (*f)(string), string vn, string d): shortName(sn), name(n), valName(vn), desc(d), value(v), func(f) {}
+};
+
+struct Category {
+  string name;
+  string cmdName;
+  Category(string n, string c): name(n), cmdName(c) {}
 };
 
 struct AudioPacket {

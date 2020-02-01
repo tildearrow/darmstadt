@@ -46,6 +46,7 @@ int theFormat;
 int vaStat;
 int fskip;
 bool paused, noSignal;
+int qp, gopSize, encSpeed;
 
 int discvar1, discvar2;
 
@@ -104,6 +105,7 @@ struct winsize winSize;
 drmDevice* devices[128];
 int deviceCount;
 std::vector<Param> params;
+std::vector<Category> categories;
 
 string encName;
 int autoDevice;
@@ -323,6 +325,10 @@ bool pListDevices(string) {
   return false;
 }
 
+bool pListDisplays(string) {
+  return false;
+}
+
 bool pSetDevice(string u) {
   try {
     autoDevice=stoi(u);
@@ -437,8 +443,14 @@ bool pHesse(string) {
 
 bool pHelp(string) {
   printf("usage: darmstadt [params] [filename]\n\n"
-         "parameter list:\n");
+         "by default darmstadt outputs to out.ts.\n");
   for (auto& i: params) {
+    for (auto& j: categories) {
+      if (j.cmdName==i.name) {
+        printf("\n%s:\n",j.name.c_str());
+        break;
+      }
+    }
     if (i.value) {
       printf("  -%s %s: %s\n",i.name.c_str(),i.valName.c_str(),i.desc.c_str());
     } else {
@@ -553,37 +565,55 @@ bool pSetGOP(string) {
 }
 
 void initParams() {
-  params.push_back(Param("help",false,pHelp,"","display this help"));
+  // information
+  categories.push_back(Category("Information","help"));
+  params.push_back(Param("h","help",false,pHelp,"","display this help"));
+  params.push_back(Param("l","listdevices",false,pListDevices,"","list available devices"));
+  params.push_back(Param("L","listdisplays",false,pListDisplays,"","list available displays"));
+  
+  // device selection
+  categories.push_back(Category("Device selection","device"));
+  params.push_back(Param("d","device",true,pSetDevice,"index","select device"));
+  params.push_back(Param("V","vendor",true,pSetVendor,"AMD|Intel","select device by vendor"));
+  params.push_back(Param("B","busid",true,pSetBusID,"xx:yy.z","select device by PCI bus ID"));
+  params.push_back(Param("D","display",true,pSetDisplay,"name","select display to record"));
+  
+  // video options
+  categories.push_back(Category("Video options","size"));
+  params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
+  params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
+  params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method"));
+  params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay"));
+  params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
+  params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));
+  params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
 
-  params.push_back(Param("h264",false,pSetH264,"","set video codec to H.264"));
-  params.push_back(Param("hevc",false,pSetHEVC,"","set video codec to H.265/HEVC"));
-  params.push_back(Param("mjpeg",false,pSetMJPEG,"","set video codec to MJPEG (not useful)"));
-  params.push_back(Param("mpeg2",false,pSetMPEG2,"","set video codec to MPEG-2"));
-  params.push_back(Param("vp8",false,pSetVP8,"","set video codec to VP8"));
-  params.push_back(Param("vp9",false,pSetVP9,"","set video codec to VP9"));
-  params.push_back(Param("10bit",false,pSet10Bit,"","use 10-bit pixel format"));
-  params.push_back(Param("absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
-  params.push_back(Param("listdevices",false,pListDevices,"","list available devices"));
-  params.push_back(Param("device",true,pSetDevice,"index","select device"));
-  params.push_back(Param("vendor",true,pSetVendor,"AMD|Intel","select device by vendor"));
-  params.push_back(Param("busid",true,pSetBusID,"xx:yy.z","select device by PCI bus ID"));
-  params.push_back(Param("display",true,pSetDisplay,"name","select display to record"));
-  params.push_back(Param("skip",true,pSetSkip,"value","set frameskip value"));
-  params.push_back(Param("audio",true,pSetAudio,"jack|pulse|alsa|none","set audio engine (none disables audio recording)"));
-  params.push_back(Param("audiodev",true,pSetAudioDev,"name","set audio capture device"));
-  params.push_back(Param("audiocodec",true,pSetAudioCodec,"codec","set audio codec"));
-  params.push_back(Param("size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
-  params.push_back(Param("crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
-  params.push_back(Param("scale",true,pSetVideoScale,"fit|fill|orig","set scaling method"));
-  params.push_back(Param("cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay"));
-  params.push_back(Param("quality",true,pSetQuality,"0-50","set quality (less is better)"));
-  params.push_back(Param("bitrate",true,pSetBitRate,"value","set bitrate (in Kbps)"));
-  params.push_back(Param("speed",true,pSetEncSpeed,"quality|balanced|speed","set encoder quality/speed tradeoff (if supported)"));
-  params.push_back(Param("keyinterval",true,pSetGOP,"frames","set interval between intra-frames (keyframes)"));
-
+  // codec selection
+  categories.push_back(Category("Codec selection","h264"));
+  params.push_back(Param("","h264",false,pSetH264,"","set video codec to H.264"));
+  params.push_back(Param("","hevc",false,pSetHEVC,"","set video codec to H.265/HEVC"));
+  params.push_back(Param("","mjpeg",false,pSetMJPEG,"","set video codec to MJPEG (not useful)"));
+  params.push_back(Param("","mpeg2",false,pSetMPEG2,"","set video codec to MPEG-2"));
+  params.push_back(Param("","vp8",false,pSetVP8,"","set video codec to VP8"));
+  params.push_back(Param("","vp9",false,pSetVP9,"","set video codec to VP9"));
+  
+  // codec options
+  categories.push_back(Category("Codec options","quality"));
+  params.push_back(Param("q","quality",true,pSetQuality,"0-50","set quality (less is better)"));
+  params.push_back(Param("b","bitrate",true,pSetBitRate,"value","set bitrate (in Kbps)"));
+  params.push_back(Param("sp","speed",true,pSetEncSpeed,"quality|balanced|speed","set encoder quality/speed tradeoff (if supported)"));
+  params.push_back(Param("g","keyinterval",true,pSetGOP,"frames","set interval between intra-frames (keyframes)"));
+  
+  // audio options
+  categories.push_back(Category("Audio options","audio"));
+  params.push_back(Param("a","audio",true,pSetAudio,"jack|pulse|alsa|none","set audio engine (none disables audio recording)"));
+  params.push_back(Param("A","audiodev",true,pSetAudioDev,"name","set audio capture device"));
+  params.push_back(Param("ac","audiocodec",true,pSetAudioCodec,"codec","set audio codec"));
+  
   // VA-API -> NVENC codepath
-  params.push_back(Param("hesse",false,pHesse,"","enable hesse mode (use AMD/Intel card for capture and NVIDIA card for encoding)"));
-  params.push_back(Param("hessebench",false,hesseBench,"","benchmark hesse overhead"));
+  categories.push_back(Category("Hesse mode selection","hesse"));
+  params.push_back(Param("H","hesse",false,pHesse,"","enable hesse mode (use AMD/Intel card for capture and NVIDIA card for encoding)"));
+  params.push_back(Param("B","hessebench",false,hesseBench,"","benchmark hesse overhead"));
 }
 
 // Intel IDs: 8086
@@ -613,6 +643,9 @@ int main(int argc, char** argv) {
   bitRatePre=0;
   framerate=0;
   fskip=1;
+  qp=-1;
+  gopSize=-1;
+  encSpeed=-1;
   cacheEmpty=false;
   cacheRun=false;
   noSignal=false;
@@ -795,7 +828,7 @@ int main(int argc, char** argv) {
     } else {
       encName="h264_vaapi";
     }
-  }  
+  }
   
   if (planeres) drmModeFreePlaneResources(planeres);
   if (plane) drmModeFreePlane(plane);
@@ -894,11 +927,18 @@ int main(int argc, char** argv) {
     encoder->framerate=(AVRational){framerate,fskip};
   }
   encoder->sample_aspect_ratio=(AVRational){1,1};
+  if (gopSize>=1) {
+    encoder->gop_size=gopSize;
+  } else {
+    if (hesse) {
+      encoder->gop_size=90;
+    } else {
+      encoder->gop_size=40;
+    }
+  }
   if (hesse) {
-    encoder->gop_size=90;
     encoder->pix_fmt=AV_PIX_FMT_BGR0;
   } else {
-    encoder->gop_size=40;
     encoder->pix_fmt=AV_PIX_FMT_VAAPI;
   }
   encoder->max_b_frames=0;
@@ -917,7 +957,11 @@ int main(int argc, char** argv) {
     encoder->hw_frames_ctx=hardFrameDataR;
   }
   
-  av_dict_set(&encOpt,"qp","26",0);
+  if (qp>=0) {
+    av_dict_set(&encOpt,"qp",strFormat("%d",qp).c_str(),0);
+  } else {
+    av_dict_set(&encOpt,"qp","26",0);
+  }
   
   if (hesse) {
     if (absolPerf) {
