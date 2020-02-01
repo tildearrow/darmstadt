@@ -532,7 +532,30 @@ bool hesseBench(string u) {
   return false;
 }
 
-bool pSetVideoSize(string) {
+bool pSetVideoSize(string val) {
+  string num;
+  size_t xpos;
+
+  xpos=val.find_first_of("xX*,");
+  if (xpos==string::npos) {
+    logE("invalid size.\n");
+    return false;
+  }
+
+  try {
+    num=val.substr(0,xpos);
+    ow=stoi(num);
+    num=val.substr(xpos+1);
+    oh=stoi(num);
+  } catch (std::exception &e) {
+    logE("invalid size.\n");
+    return false;
+  }
+
+  if (ow<1 || oh<1) {
+    logE("invalid size. it must be at least 1x1.\n");
+    return false;
+  }
   return true;
 }
 
@@ -646,6 +669,8 @@ int main(int argc, char** argv) {
   qp=-1;
   gopSize=-1;
   encSpeed=-1;
+  ow=-1;
+  oh=-1;
   cacheEmpty=false;
   cacheRun=false;
   noSignal=false;
@@ -818,8 +843,10 @@ int main(int argc, char** argv) {
   dw=fb->width;
   dh=fb->height;
 
-  ow=dw;
-  oh=dh;
+  if (ow<1 || oh<1) {
+    ow=dw;
+    oh=dh;
+  }
 
   if (encName=="") {
     // 2880x1800 = 5.1 megapixels
