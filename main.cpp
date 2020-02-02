@@ -46,7 +46,7 @@ int theFormat;
 int vaStat;
 int fskip;
 bool paused, noSignal;
-int qp, gopSize, encSpeed;
+int qp, br, gopSize, encSpeed;
 
 int discvar1, discvar2;
 
@@ -547,7 +547,7 @@ bool pSetVideoSize(string val) {
     ow=stoi(num);
     num=val.substr(xpos+1);
     oh=stoi(num);
-  } catch (std::exception &e) {
+  } catch (std::exception& e) {
     logE("invalid size.\n");
     return false;
   }
@@ -571,11 +571,31 @@ bool pSetCursor(string) {
   return true;
 }
 
-bool pSetQuality(string) {
+bool pSetQuality(string val) {
+  try {
+    qp=stoi(val);
+  } catch (std::exception& e) {
+    logE("invalid quality value. it must be between 0 and 50.\n");
+    return false;
+  }
+  if (qp<0 || qp>50) {
+    logE("invalid quality value. it must be between 0 and 50.\n");
+    return false;
+  }
   return true;
 }
 
-bool pSetBitRate(string) {
+bool pSetBitRate(string val) {
+  try {
+    br=stoi(val);
+  } catch (std::exception& e) {
+    logE("invalid bitrate. ex\n");
+    return false;
+  }
+  if (br<=0) {
+    logE("invalid bitrate.\n");
+    return false;
+  }
   return true;
 }
 
@@ -667,6 +687,7 @@ int main(int argc, char** argv) {
   framerate=0;
   fskip=1;
   qp=-1;
+  br=-1;
   gopSize=-1;
   encSpeed=-1;
   ow=-1;
@@ -718,7 +739,7 @@ int main(int argc, char** argv) {
       }
       //printf("arg %s. val %s\n",arg.c_str(),val.c_str());
       for (size_t j=0; j<params.size(); j++) {
-        if (params[j].name==arg) {
+        if (params[j].name==arg || params[j].shortName==arg) {
           if (!params[j].func(val)) return 1;
           break;
         }
@@ -857,6 +878,13 @@ int main(int argc, char** argv) {
     }
   }
   
+  // warn user about 1920x1088 bug
+  if (devImportance(autoDevice)==2 && encName=="hevc_vaapi") {
+    if (ow%16!=0 || oh%16!=0) {
+      logW("warning: due to a bug in the AMD H.265 encoder, your video will have a wrong resolution.\n");
+    }
+  }
+  
   if (planeres) drmModeFreePlaneResources(planeres);
   if (plane) drmModeFreePlane(plane);
   if (fb) drmModeFreeFB(fb);
@@ -877,7 +905,17 @@ int main(int argc, char** argv) {
     return 1;
   }
   
-  logD("va-api instance opened. %s.\n",vaQueryVendorString(vaInst));
+  string vendorName=vaQueryVendorString(vaInst);
+  logD("va-api instance opened. %s.\n",vendorName.c_str());
+  
+  // warn the user about newer Mesa releases
+  if (vendorName.find("Mesa")!=std::string::npos) {
+    if (vendorName.find("19.0")==std::string::npos) {
+      if (devImportance(autoDevice)==2) {
+        logW("Mesa versions after 19.0 may hang on certain AMD cards while recording! be careful!\n");
+      }
+    }
+  }
   
   vaQueryImageFormats(vaInst,allowedFormats,&allowedFormatsSize);
   
@@ -891,9 +929,9 @@ int main(int argc, char** argv) {
   coAttr[0].type=VASurfaceAttribUsageHint;
   coAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
   coAttr[0].value.type=VAGenericValueTypeInteger;
-  coAttr[0].value.value.i=VA_SURFACE_ATTRIB_USAGE_HINT_VPP_READ;
+  coAttr[0].value.value.i=VA_SURFACE_ATTRIB_USAGE_HINT_GENERIC;
   
-  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_YUV420,ow,oh,portFrame,1,coAttr,1))!=VA_STATUS_SUCCESS) {
+  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,ow,oh,portFrame,1,coAttr,1))!=VA_STATUS_SUCCESS) {
     logE("could not create surface for encoding... %x\n",vaStat);
     return 1;
   }
@@ -984,10 +1022,21 @@ int main(int argc, char** argv) {
     encoder->hw_frames_ctx=hardFrameDataR;
   }
   
-  if (qp>=0) {
-    av_dict_set(&encOpt,"qp",strFormat("%d",qp).c_str(),0);
+  if (br>0) {
+    logD("using constant bitrate mode.\n");
+    // warn user about AMD H.265 CBR bug
+    if (devImportance(autoDevice)==2 && encName=="hevc_vaapi") {
+      logW("constant bitrate mode may be broken under AMD cards for the H.265 codec! it is likely that the output will be corrupted.\n");
+    }
+    av_dict_set(&encOpt,"b",strFormat("%dK",br).c_str(),0);
+    av_dict_set(&encOpt,"maxrate",strFormat("%dK",br).c_str(),0);
   } else {
-    av_dict_set(&encOpt,"qp","26",0);
+    logD("using constant quality mode.\n");
+    if (qp>=0) {
+      av_dict_set(&encOpt,"qp",strFormat("%d",qp).c_str(),0);
+    } else {
+      av_dict_set(&encOpt,"qp","26",0);
+    }
   }
   
   if (hesse) {
@@ -1218,22 +1267,6 @@ int main(int argc, char** argv) {
       btime=vtime;
       vtime=mkts(0,0);
     }
-    // --HACK OF SORTS--
-    // because VBlank isn't working out well for me,
-    // and I seem to be unable to copy a surface to
-    // another, I devised this method as a workaround.
-    // please note this is temporary, and the whole
-    // cache/copy thing still remains in the plan.
-    // I just want Jane to come and make me happy...
-    //
-    // OK, SO, PLEASE, REITERATE THE PREVIOUS COMMENT
-    // AS MUCH AS YOU CAN!!!
-    //
-    // OK, so, please, ignore the above comment.
-    // the brightness is somewhere else.
-    //
-    // WAIT! why is this method still here? the
-    // superior "absolute" approach is in place!
     if (newSize) {
       newSize=false;
       ioctl(1,TIOCGWINSZ,&winSize);
@@ -1352,14 +1385,50 @@ int main(int argc, char** argv) {
         printf("no surface sync %x\n",vaStat);
       }
 
+    scaleRegion.x=0;
+    scaleRegion.y=0;
+    scaleRegion.width=ow;
+    scaleRegion.height=oh;
+  
+    scaler.surface=surface;
+    scaler.surface_region=0;
+    scaler.surface_color_standard=VAProcColorStandardBT709;
+    scaler.output_region=0;
+    scaler.output_background_color=0xff000000;
+    scaler.output_color_standard=VAProcColorStandardBT709;
+    scaler.pipeline_flags=0;
+    scaler.filter_flags=VA_FILTER_SCALING_HQ;
+
     if (hesse) {
       // HESSE NVENC CODE BEGIN //
       hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
+
+      if ((vaStat=vaBeginPicture(vaInst,scalerC,portFrame[0]))!=VA_STATUS_SUCCESS) {
+        printf("vaBeginPicture fail: %x\n",vaStat);
+        return 1;
+      }
+      if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
+        printf("param buffer creation fail: %x\n",vaStat);
+        return 1;
+      }
+      if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
+        printf("vaRenderPicture fail: %x\n",vaStat);
+        return 1;
+      }
+      if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
+        printf("vaEndPicture fail: %x\n",vaStat);
+        return 1;
+      }
+      if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
+        printf("vaDestroyBuffer fail: %x\n",vaStat);
+        return 1;
+      }
+
       if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
         logE("could not create image... %x\n",vaStat);
         break;
       }
-      if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+      if ((vaStat=vaGetImage(vaInst,portFrame[0],0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
         logW("couldn't get image!\n");
       }
       if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
@@ -1381,19 +1450,6 @@ int main(int argc, char** argv) {
       // convert
       massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
       
-      scaleRegion.x=0;
-      scaleRegion.y=0;
-      scaleRegion.width=ow;
-      scaleRegion.height=oh;
-  
-      scaler.surface=surface;
-      scaler.surface_region=0;
-      scaler.surface_color_standard=VAProcColorStandardBT709;
-      scaler.output_region=0;
-      scaler.output_background_color=0xff000000;
-      scaler.output_color_standard=VAProcColorStandardBT709;
-      scaler.pipeline_flags=0;
-      scaler.filter_flags=VA_FILTER_SCALING_HQ;
   
       if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[1]))!=VA_STATUS_SUCCESS) {
         printf("vaBeginPicture fail: %x\n",vaStat);
@@ -1437,7 +1493,25 @@ int main(int argc, char** argv) {
       AudioPacket* audioPack;
       while ((audioPack=ae->read())!=NULL) {
         //logD("read one packet. write out.\n");
-        memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
+        if (audFrame->format==AV_SAMPLE_FMT_FLT) {
+          memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
+        } else {
+          switch (audFrame->format) {
+            case AV_SAMPLE_FMT_S16:
+              for (int i=0; i<1024*ae->channels(); i++) {
+                ((short*)audFrame->data)[i]=audioPack->data[i]*32767;
+              }
+              break;
+            case AV_SAMPLE_FMT_S32:
+              for (int i=0; i<1024*ae->channels(); i++) {
+                ((int*)audFrame->data)[i]=audioPack->data[i]*16777215;
+              }
+              break;
+            default:
+              logW("this sample format is not supported!\n");
+              break;
+          }
+        }
         delete audioPack;
         audPacket.data=NULL;
         audPacket.size=0;
