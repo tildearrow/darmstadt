@@ -1069,7 +1069,7 @@ int main(int argc, char** argv) {
     }
     audioType=audioTypeNone;
   } else {
-    if ((audEncInfo=avcodec_find_encoder_by_name("pcm_f32le"))==NULL) {
+    if ((audEncInfo=avcodec_find_encoder_by_name("pcm_s16le"))==NULL) {
       logE("audio codec not found D:\n");
       return 1;
     }
@@ -1499,16 +1499,22 @@ int main(int argc, char** argv) {
           switch (audFrame->format) {
             case AV_SAMPLE_FMT_S16:
               for (int i=0; i<1024*ae->channels(); i++) {
-                ((short*)audFrame->data)[i]=audioPack->data[i]*32767;
+                if (audioPack->data[i]>1) {
+                  ((short*)audFrame->data[0])[i]=1;
+                } else if (audioPack->data[i]<-1) {
+                  ((short*)audFrame->data[0])[i]=-1;
+                } else {
+                  ((short*)audFrame->data[0])[i]=audioPack->data[i]*32767;
+                }
               }
               break;
             case AV_SAMPLE_FMT_S32:
               for (int i=0; i<1024*ae->channels(); i++) {
-                ((int*)audFrame->data)[i]=audioPack->data[i]*16777215;
+                ((int*)audFrame->data[0])[i]=audioPack->data[i]*16777215;
               }
               break;
             default:
-              logW("this sample format is not supported!\n");
+              logW("this sample format is not supported! (%d)\n",audFrame->format);
               break;
           }
         }
