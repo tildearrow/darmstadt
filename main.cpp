@@ -98,6 +98,8 @@ SyncMethod syncMethod;
 
 AudioType audioType;
 AudioEngine* ae;
+float audGain, audLimAmt;
+bool audLimiter;
 
 struct winsize winSize;
 
@@ -435,6 +437,15 @@ bool pSetAudioCodec(string) {
   return true;
 }
 
+bool pSetAudioLim(string) {
+  audLimiter=true;
+  return true;
+}
+
+bool pSetAudioVol(string) {
+  return true;
+}
+
 bool pHesse(string) {
   hesse=true;
   encName="h264_nvenc";
@@ -652,6 +663,8 @@ void initParams() {
   params.push_back(Param("a","audio",true,pSetAudio,"jack|pulse|alsa|none","set audio engine (none disables audio recording)"));
   params.push_back(Param("A","audiodev",true,pSetAudioDev,"name","set audio capture device"));
   params.push_back(Param("ac","audiocodec",true,pSetAudioCodec,"codec","set audio codec"));
+  params.push_back(Param("al","limiter",false,pSetAudioLim,"","enable built-in audio limiter"));
+  params.push_back(Param("av","volume",false,pSetAudioVol,"","set audio volume, between 0.0 and 1.0"));
   
   // VA-API -> NVENC codepath
   categories.push_back(Category("Hesse mode selection","hesse"));
@@ -698,6 +711,9 @@ int main(int argc, char** argv) {
   paused=false;
   hesse=false;
   absolPerf=false;
+  audLimiter=false;
+  audLimAmt=1;
+  audGain=1;
   audioType=audioTypeJACK;
   autoDevice=-1;
   brTime=curTime(CLOCK_MONOTONIC);
@@ -1069,7 +1085,7 @@ int main(int argc, char** argv) {
     }
     audioType=audioTypeNone;
   } else {
-    if ((audEncInfo=avcodec_find_encoder_by_name("pcm_s16le"))==NULL) {
+    if ((audEncInfo=avcodec_find_encoder_by_name("pcm_f32le"))==NULL) {
       logE("audio codec not found D:\n");
       return 1;
     }
@@ -1492,25 +1508,57 @@ int main(int argc, char** argv) {
     if (audioType!=audioTypeNone) {
       AudioPacket* audioPack;
       while ((audioPack=ae->read())!=NULL) {
-        //logD("read one packet. write out.\n");
+        // post-process
+        for (int i=0; i<1024*ae->channels(); i++) {
+          audioPack->data[i]*=audGain;
+          if (audLimiter) {
+            if (fabs(audioPack->data[i])>audLimAmt) {
+              audLimAmt=fabs(audioPack->data[i]);
+            }
+            audioPack->data[i]/=audLimAmt;
+            audLimAmt-=audLimAmt*0.00002;
+            if (audLimAmt<1) audLimAmt=1;
+          }
+        }
+        
+        // copy audio to packet
         if (audFrame->format==AV_SAMPLE_FMT_FLT) {
           memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
         } else {
           switch (audFrame->format) {
+            case AV_SAMPLE_FMT_U8:
+              for (int i=0; i<1024*ae->channels(); i++) {
+                if (audioPack->data[i]>1) {
+                  ((unsigned char*)audFrame->data[0])[i]=255;
+                } else if (audioPack->data[i]<-1) {
+                  ((unsigned char*)audFrame->data[0])[i]=0;
+                } else {
+                  ((unsigned char*)audFrame->data[0])[i]=0x80+audioPack->data[i]*127;
+                }
+              }
+              break;
             case AV_SAMPLE_FMT_S16:
               for (int i=0; i<1024*ae->channels(); i++) {
                 if (audioPack->data[i]>1) {
-                  ((short*)audFrame->data[0])[i]=1;
+                  ((short*)audFrame->data[0])[i]=32767;
                 } else if (audioPack->data[i]<-1) {
-                  ((short*)audFrame->data[0])[i]=-1;
+                  ((short*)audFrame->data[0])[i]=-32767;
                 } else {
                   ((short*)audFrame->data[0])[i]=audioPack->data[i]*32767;
                 }
               }
               break;
             case AV_SAMPLE_FMT_S32:
+              // floating point limitations
               for (int i=0; i<1024*ae->channels(); i++) {
-                ((int*)audFrame->data[0])[i]=audioPack->data[i]*16777215;
+                if (audioPack->data[i]>=1) {
+                  ((int*)audFrame->data[0])[i]=2147483647;
+                } else if (audioPack->data[i]<=-1) {
+                  ((int*)audFrame->data[0])[i]=-2147483647;
+                } else {
+                  ((int*)audFrame->data[0])[i]=audioPack->data[i]*8388608;
+                  ((int*)audFrame->data[0])[i]<<=8;
+                }
               }
               break;
             default:

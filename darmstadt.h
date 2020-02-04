@@ -41,6 +41,7 @@
 // -AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!!!!!!!1
 
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include <signal.h>
 #include <termios.h>
