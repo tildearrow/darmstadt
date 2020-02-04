@@ -22,7 +22,7 @@
 
 as soon as you run the program, it will begin recording. press `Ctrl-C` to stop.
 
-if no file is specified, the program will output to out.ts.
+if no file is specified, the program will output to out.mkv.
 
 by default, darmstadt encodes in H.264 (AVC) for resolutions lower than 2880x1800 and HEVC (H.265) otherwise.
 

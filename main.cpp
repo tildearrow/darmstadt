@@ -93,7 +93,7 @@ FILE* f;
 
 int speeds[120];
 
-const char* outname="out.ts";
+const char* outname="out.mkv";
 
 SyncMethod syncMethod;
 
@@ -455,7 +455,7 @@ bool pHesse(string) {
 
 bool pHelp(string) {
   printf("usage: darmstadt [params] [filename]\n\n"
-         "by default darmstadt outputs to out.ts.\n");
+         "by default darmstadt outputs to %s.\n",outname);
   for (auto& i: params) {
     for (auto& j: categories) {
       if (j.cmdName==i.name) {
