@@ -27,7 +27,7 @@ bool PulseAudioEngine::init(string dn) {
     devName=dn;
   }
   
-  ac=pa_simple_new(NULL,"darmstadt",PA_STREAM_RECORD,(devName=="")?(NULL):(devName.c_str()),"capture", &asf,NULL,NULL,&as);
+  ac=pa_simple_new(NULL,"darmstadt",PA_STREAM_RECORD,(devName=="")?(NULL):(devName.c_str()),"capture",&asf,NULL,NULL,&as);
   
   if (ac==NULL) {
     logW("couldn't set PulseAudio up. %s.\n",pa_strerror(as));

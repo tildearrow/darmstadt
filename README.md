@@ -20,7 +20,7 @@ no, this is not complete yet or tested on an environment that is not my Vega FE.
 maybe it can work on your setup, but is very doubtful. if it does however, please tell me.
 
 no, this won't work on NVIDIA either, of course. wait for röntgen-mode and maybe you get a chance (but I doubt because NVIDIA is so greedy with their NVFBC restrictions).
-however you can use NVIDIA for encoding the AMD/Intel capture in hesse-mode. see [hesse.md](hesse.md) for more information.
+however you can use NVIDIA for encoding the AMD/Intel capture in hesse mode. see [hesse.md](hesse.md) for more information.
 
 the real reason why I made this public is because of a bug report I'm making in the Phoronix forums since my card began to hang again and I swear I hate it because I do not tolerate having to reboot the system whenever it doesn't feel like working. it takes like 2 minutes to start up plus I lose all my work on open applications.
 

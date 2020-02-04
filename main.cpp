@@ -19,6 +19,7 @@ struct timespec btime, vtime, dtime;
 struct timespec wtStart, wtEnd;
 
 int dw, dh, ow, oh;
+ScaleMethod sm;
 
 pthread_t thr;
 std::queue<qFrame> frames;
@@ -489,6 +490,7 @@ bool hesseBench(string u) {
   for (int i=0; i<1920; i++) {
     memcpy(image[1],image[0],size);
     memcpy(image[2],image[1],size);
+    memcpy(image[1],image[0],size);
   }
   bEnd=curTime(CLOCK_MONOTONIC);
   for (int i=0; i<3; i++) {
@@ -509,6 +511,7 @@ bool hesseBench(string u) {
   for (int i=0; i<480; i++) {
     memcpy(image[1],image[0],size);
     memcpy(image[2],image[1],size);
+    memcpy(image[1],image[0],size);
   }
   bEnd=curTime(CLOCK_MONOTONIC);
   for (int i=0; i<3; i++) {
@@ -529,6 +532,7 @@ bool hesseBench(string u) {
   for (int i=0; i<120; i++) {
     memcpy(image[1],image[0],size);
     memcpy(image[2],image[1],size);
+    memcpy(image[1],image[0],size);
   }
   bEnd=curTime(CLOCK_MONOTONIC);
   for (int i=0; i<3; i++) {
@@ -935,6 +939,7 @@ int main(int argc, char** argv) {
   
   vaQueryImageFormats(vaInst,allowedFormats,&allowedFormatsSize);
   
+  theFormat=0;
   for (int i=0; i<allowedFormatsSize; i++) {
     if (allowedFormats[i].fourcc==VA_FOURCC_BGRX) {
       theFormat=i;
@@ -1200,7 +1205,7 @@ int main(int argc, char** argv) {
   
   printf("\x1b[1m|\x1b[m\n");
   if (hesse) {
-    printf("\x1b[1m|\x1b[34m ~~~~> \x1b[1;35mDARMSTADT (hesse-mode) \x1b[1;36m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[34m ~~~~> \x1b[1;35mDARMSTADT (hesse mode) \x1b[1;36m" DARM_VERSION "\x1b[m\n");
   } else {
     printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[m\n");
   }
@@ -1401,15 +1406,32 @@ int main(int argc, char** argv) {
         printf("no surface sync %x\n",vaStat);
       }
 
-    scaleRegion.x=0;
-    scaleRegion.y=0;
-    scaleRegion.width=ow;
-    scaleRegion.height=oh;
+      sm=scaleFit;
+    switch (sm) {
+      case scaleFill:
+        scaleRegion.x=0;
+        scaleRegion.y=0;
+        scaleRegion.width=ow;
+        scaleRegion.height=oh;
+        break;
+      case scaleFit:
+        scaleRegion.x=0;
+        scaleRegion.y=0;
+        scaleRegion.width=ow;
+        scaleRegion.height=oh;
+        break;
+      case scaleOrig:
+        scaleRegion.x=(ow-dw)/2;
+        scaleRegion.y=(oh-dh)/2;
+        scaleRegion.width=dw;
+        scaleRegion.height=dh;
+        break;
+    }
   
     scaler.surface=surface;
     scaler.surface_region=0;
     scaler.surface_color_standard=VAProcColorStandardBT709;
-    scaler.output_region=0;
+    scaler.output_region=&scaleRegion;
     scaler.output_background_color=0xff000000;
     scaler.output_color_standard=VAProcColorStandardBT709;
     scaler.pipeline_flags=0;
@@ -1419,32 +1441,12 @@ int main(int argc, char** argv) {
       // HESSE NVENC CODE BEGIN //
       hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
 
-      if ((vaStat=vaBeginPicture(vaInst,scalerC,portFrame[0]))!=VA_STATUS_SUCCESS) {
-        printf("vaBeginPicture fail: %x\n",vaStat);
-        return 1;
-      }
-      if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
-        printf("param buffer creation fail: %x\n",vaStat);
-        return 1;
-      }
-      if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
-        printf("vaRenderPicture fail: %x\n",vaStat);
-        return 1;
-      }
-      if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
-        printf("vaEndPicture fail: %x\n",vaStat);
-        return 1;
-      }
-      if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
-        printf("vaDestroyBuffer fail: %x\n",vaStat);
-        return 1;
-      }
-
       if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
         logE("could not create image... %x\n",vaStat);
         break;
       }
-      if ((vaStat=vaGetImage(vaInst,portFrame[0],0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+      // how come this fails? we need to rescale!
+      if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
         logW("couldn't get image!\n");
       }
       if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {

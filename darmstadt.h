@@ -102,6 +102,12 @@ enum SyncMethod {
   syncTimer
 };
 
+enum ScaleMethod {
+  scaleFit,
+  scaleFill,
+  scaleOrig
+};
+
 enum AudioType {
   audioTypeNone=0,
   audioTypeJACK,
