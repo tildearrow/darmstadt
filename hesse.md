@@ -29,10 +29,12 @@ for normal mode.
 
 for 4:4:4 (super high quality) mode.
 
-# note
+# notes
 
 using hesse mode involves additional CPU/GPU overhead to transfer the picture between the AMD/Intel and NVIDIA cards.
 fast RAM recommended for higher resolutions.
+
+scaling, cropping and on-the-fly resolution changes are not supported in hesse mode at the moment.
 
 # why "hesse"?
 
