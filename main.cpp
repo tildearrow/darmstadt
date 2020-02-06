@@ -1205,7 +1205,7 @@ int main(int argc, char** argv) {
   
   printf("\x1b[1m|\x1b[m\n");
   if (hesse) {
-    printf("\x1b[1m|\x1b[34m ~~~~> \x1b[1;35mDARMSTADT (hesse mode) \x1b[1;36m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
   } else {
     printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[m\n");
   }
@@ -1239,6 +1239,11 @@ int main(int argc, char** argv) {
     retv=av_frame_get_buffer(hardFrame,0);
     if (retv<0) {
       logE("couldn't allocate frame data!\n");
+      return 1;
+    }
+    // initialize the image
+    if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
+      logE("could not create image... %x\n",vaStat);
       return 1;
     }
   }
@@ -1441,10 +1446,6 @@ int main(int argc, char** argv) {
       // HESSE NVENC CODE BEGIN //
       hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
 
-      if ((vaStat=vaCreateImage(vaInst,&allowedFormats[theFormat],dw,dh,&img))!=VA_STATUS_SUCCESS) {
-        logE("could not create image... %x\n",vaStat);
-        break;
-      }
       // how come this fails? we need to rescale!
       if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
         logW("couldn't get image!\n");
@@ -1456,9 +1457,6 @@ int main(int argc, char** argv) {
       encode_write(encoder,hardFrame,out,stream);
       if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
         logE("could not unmap buffer: %x...\n",vaStat);
-      }
-      if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
-        logE("could not destroy image %x\n",vaStat);
       }
       // HESSE NVENC CODE END //
     } else {
@@ -1621,6 +1619,10 @@ int main(int argc, char** argv) {
   av_free(out->pb->buffer);
   fclose(f);
   avformat_free_context(out);
+  
+  if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
+    logE("could not destroy image %x\n",vaStat);
+  }
 
   avcodec_free_context(&encoder);
   vaDestroyContext(vaInst,scalerC);
