@@ -669,23 +669,23 @@ void initParams() {
   categories.push_back(Category("Information","help"));
   params.push_back(Param("h","help",false,pHelp,"","display this help"));
   params.push_back(Param("l","listdevices",false,pListDevices,"","list available devices"));
-  params.push_back(Param("L","listdisplays",false,pListDisplays,"","list available displays"));
+  params.push_back(Param("L","listdisplays",false,pListDisplays,"","list available displays")); // TODO
   
   // device selection
   categories.push_back(Category("Device selection","device"));
   params.push_back(Param("d","device",true,pSetDevice,"index","select device"));
   params.push_back(Param("V","vendor",true,pSetVendor,"AMD|Intel","select device by vendor"));
-  params.push_back(Param("B","busid",true,pSetBusID,"xx:yy.z","select device by PCI bus ID"));
-  params.push_back(Param("D","display",true,pSetDisplay,"name","select display to record"));
+  params.push_back(Param("B","busid",true,pSetBusID,"xx:yy.z","select device by PCI bus ID")); // TODO
+  params.push_back(Param("D","display",true,pSetDisplay,"name","select display to record")); // TODO
   
   // video options
   categories.push_back(Category("Video options","size"));
   params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
   params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
-  params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method"));
-  params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay"));
+  params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
+  params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay")); // TODO
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
-  params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));
+  params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format")); // TODO
   params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
 
   // codec selection
@@ -701,16 +701,16 @@ void initParams() {
   categories.push_back(Category("Codec options","quality"));
   params.push_back(Param("q","quality",true,pSetQuality,"0-50","set quality (less is better)"));
   params.push_back(Param("b","bitrate",true,pSetBitRate,"value","set bitrate (in Kbps)"));
-  params.push_back(Param("sp","speed",true,pSetEncSpeed,"quality|balanced|speed","set encoder quality/speed tradeoff (if supported)"));
-  params.push_back(Param("g","keyinterval",true,pSetGOP,"frames","set interval between intra-frames (keyframes)"));
+  params.push_back(Param("sp","speed",true,pSetEncSpeed,"quality|balanced|speed","set encoder quality/speed tradeoff (if supported)")); // TODO
+  params.push_back(Param("g","keyinterval",true,pSetGOP,"frames","set interval between intra-frames (keyframes)")); // TODO
   
   // audio options
   categories.push_back(Category("Audio options","audio"));
   params.push_back(Param("a","audio",true,pSetAudio,"jack|pulse|alsa|none","set audio engine (none disables audio recording)"));
-  params.push_back(Param("A","audiodev",true,pSetAudioDev,"name","set audio capture device"));
-  params.push_back(Param("ac","audiocodec",true,pSetAudioCodec,"codec","set audio codec"));
+  params.push_back(Param("A","audiodev",true,pSetAudioDev,"name","set audio capture device")); // TODO
+  params.push_back(Param("ac","audiocodec",true,pSetAudioCodec,"codec","set audio codec")); // TODO
   params.push_back(Param("al","limiter",false,pSetAudioLim,"","enable built-in audio limiter"));
-  params.push_back(Param("av","volume",false,pSetAudioVol,"","set audio volume, between 0.0 and 1.0"));
+  params.push_back(Param("av","volume",true,pSetAudioVol,"vol","set audio volume, between 0.0 and 1.0")); // TODO
   
   // VA-API -> NVENC codepath
   categories.push_back(Category("Hesse mode selection","hesse"));
