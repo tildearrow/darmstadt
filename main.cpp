@@ -19,6 +19,8 @@ struct timespec btime, vtime, dtime;
 struct timespec wtStart, wtEnd;
 
 int dw, dh, ow, oh;
+int cx, cy, cw, ch;
+bool doCrop;
 ScaleMethod sm;
 
 pthread_t thr;
@@ -36,7 +38,7 @@ VABufferID copierBuf;
 VASurfaceAttrib vaAttr[2];
 VASurfaceAttrib coAttr[2];
 VAProcPipelineParameterBuffer scaler;
-VARectangle scaleRegion;
+VARectangle scaleRegion, cropRegion;
 VAProcPipelineParameterBuffer copier;
 VARectangle copyRegion;
 VAImage img;
@@ -149,9 +151,6 @@ void* unbuff(void*) {
       f=frames.back();
       frames.pop();
       printf("popped frame. there are now %lu frames\n",frames.size());
-      /*
-      
-      */
     }
     usleep(1000);
   }
@@ -574,7 +573,50 @@ bool pSetVideoSize(string val) {
   return true;
 }
 
-bool pSetVideoCrop(string) {
+bool pSetVideoCrop(string val) {
+  string num;
+  size_t xpos, ppos1, ppos2;
+
+  xpos=val.find_first_of("xX*");
+  if (xpos==string::npos) {
+    logE("invalid size.\n");
+    return false;
+  }
+
+  ppos1=val.find_first_of("+");
+  if (ppos1==string::npos) {
+    logE("invalid position.\n");
+    return false;
+  }
+
+  ppos2=val.find_first_of("+",ppos1+1);
+  if (ppos2==string::npos) {
+    logE("invalid position.\n");
+    return false;
+  }
+
+  try {
+    num=val.substr(0,xpos);
+    cw=stoi(num);
+    num=val.substr(xpos+1,ppos1-xpos);
+    ch=stoi(num);
+    num=val.substr(ppos1+1,ppos2-ppos1);
+    cx=stoi(num);
+    num=val.substr(ppos2+1);
+    cy=stoi(num);
+  } catch (std::exception& e) {
+    logE("invalid size/position.\n");
+    return false;
+  }
+
+  if (cx<0 || cy<0 || cw<1 || ch<1) {
+    logE("invalid crop. it must fit on the screen.\n");
+    return false;
+  }
+
+  logD("crop: %d, %d, %dx%d\n",cx,cy,cw,ch);
+  
+  doCrop=true;
   return true;
 }
 
@@ -883,10 +925,22 @@ int main(int argc, char** argv) {
   
   dw=fb->width;
   dh=fb->height;
+ 
+  if (doCrop) {
+    if ((cx+cw)>=dw || (cy+ch)>=dh) {
+      logE("invalid crop. it must fit on the screen.\n");
+      return 1;
+    }
+  }
 
   if (ow<1 || oh<1) {
-    ow=dw;
-    oh=dh;
+    if (doCrop) {
+      ow=cw;
+      oh=ch;
+    } else {
+      ow=dw;
+      oh=dh;
+    }
   }
 
   if (encName=="") {
@@ -1432,9 +1486,16 @@ int main(int argc, char** argv) {
         scaleRegion.height=dh;
         break;
     }
+
+    if (doCrop) {
+      cropRegion.x=cx;
+      cropRegion.y=cy;
+      cropRegion.width=cw;
+      cropRegion.height=ch;
+    }
   
     scaler.surface=surface;
-    scaler.surface_region=0;
+    scaler.surface_region=(doCrop)?(&cropRegion):0;
     scaler.surface_color_standard=VAProcColorStandardBT709;
     scaler.output_region=&scaleRegion;
     scaler.output_background_color=0xff000000;
@@ -1620,8 +1681,10 @@ int main(int argc, char** argv) {
   fclose(f);
   avformat_free_context(out);
   
-  if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
-    logE("could not destroy image %x\n",vaStat);
+  if (hesse) {
+    if ((vaStat=vaDestroyImage(vaInst,img.image_id))!=VA_STATUS_SUCCESS) {
+      logE("could not destroy image %x\n",vaStat);
+    }
   }
 
   avcodec_free_context(&encoder);
