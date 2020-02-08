@@ -103,9 +103,15 @@ enum SyncMethod {
 };
 
 enum ScaleMethod {
-  scaleFit,
+  scaleFit=0,
   scaleFill,
   scaleOrig
+};
+
+enum EncodeSpeeds {
+  encPerformance=0,
+  encBalanced,
+  encQuality
 };
 
 enum AudioType {

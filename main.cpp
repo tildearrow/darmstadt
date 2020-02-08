@@ -77,6 +77,7 @@ AVCodec* audEncInfo;
 AVFrame* audFrame;
 AVDictionary* audEncOpt;
 AVPacket audPacket;
+string audName;
 
 AVFormatContext* out;
 
@@ -112,7 +113,7 @@ int deviceCount;
 std::vector<Param> params;
 std::vector<Category> categories;
 
-string encName;
+string encName, audEncName;
 int autoDevice;
 
 // datasets for graphs
@@ -122,7 +123,7 @@ AVRational tb;
 AVRational audiotb;
 
 // hesse: capture on AMD/Intel, encode on NVIDIA
-bool hesse, absolPerf;
+bool hesse, absolPerf, tenBit;
 
 int writeToCache(void*, unsigned char* buf, int size) {
   bitRatePre+=size;
@@ -378,7 +379,25 @@ bool pSetVendor(string v) {
   return false;
 }
 
-bool pSetBusID(string) {
+bool pSetBusID(string val) {
+  for (int i=0; i<deviceCount; i++) {
+    if (strFormat("%.2x:%.2x.%x",devices[i]->businfo.pci->bus,devices[i]->businfo.pci->dev,devices[i]->businfo.pci->func)==val) {
+      autoDevice=i;
+      break;
+    }
+  }
+  
+  if (autoDevice==-1) {
+    logE("no devices under this bus found.\n");
+    return false;
+  }
+  
+  if (devImportance(autoDevice)==-9001) {
+    logE("seriously? did you think that would work?\n");
+    logE("NVIDIA is supported in encode-only mode (-hesse).\n");
+    return false;
+  }
+
   return true;
 }
 
@@ -401,6 +420,7 @@ bool pSetSkip(string u) {
 }
 
 bool pSet10Bit(string) {
+  tenBit=true;
   return true;
 }
 
@@ -429,11 +449,13 @@ bool pSetAudio(string v) {
   return true;
 }
 
-bool pSetAudioDev(string) {
+bool pSetAudioDev(string val) {
+  audName=val;
   return true;
 }
 
-bool pSetAudioCodec(string) {
+bool pSetAudioCodec(string val) {
+  audEncName=val;
   return true;
 }
 
@@ -442,7 +464,18 @@ bool pSetAudioLim(string) {
   return true;
 }
 
-bool pSetAudioVol(string) {
+bool pSetAudioVol(string val) {
+  try {
+    audGain=stof(val);
+  } catch (std::exception& e) {
+    logE("invalid volume.\n");
+    return false;
+  }
+  
+  if (audGain<0 || audGain>1) {
+    logE("it must be between 0.0 and 1.0.\n");
+    return false;
+  }
   return true;
 }
 
@@ -656,11 +689,36 @@ bool pSetBitRate(string val) {
   return true;
 }
 
-bool pSetEncSpeed(string) {
+bool pSetEncSpeed(string val) {
+  if (val=="speed") {
+    encSpeed=encPerformance;
+  } else if (val=="balanced") {
+    encSpeed=encBalanced;
+  } else if (val=="quality") {
+    encSpeed=encQuality;
+  } else {
+    logE("it must be speed, balanced or quality.\n");
+    return false;
+  }
   return true;
 }
 
-bool pSetGOP(string) {
+bool pSetGOP(string val) {
+  try {
+    gopSize=stoi(val);
+  } catch (std::exception& e) {
+    logE("invalid value.\n");
+    return false;
+  }
+  
+  if (gopSize<1 || gopSize>250) {
+    logE("must be between 1 and 250.\n");
+    return false;
+  }
+  
+  if (gopSize<8) {
+    logW("keyframe interval is too small. this may result in a file that is unplayable.\n");
+  }
   return true;
 }
 
@@ -675,7 +733,7 @@ void initParams() {
   categories.push_back(Category("Device selection","device"));
   params.push_back(Param("d","device",true,pSetDevice,"index","select device"));
   params.push_back(Param("V","vendor",true,pSetVendor,"AMD|Intel","select device by vendor"));
-  params.push_back(Param("B","busid",true,pSetBusID,"xx:yy.z","select device by PCI bus ID")); // TODO
+  params.push_back(Param("B","busid",true,pSetBusID,"xx:yy.z","select device by PCI bus ID"));
   params.push_back(Param("D","display",true,pSetDisplay,"name","select display to record")); // TODO
   
   // video options
@@ -685,7 +743,7 @@ void initParams() {
   params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
   params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay")); // TODO
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
-  params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format")); // TODO
+  params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format")); // TODO 10-bit mode
   params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
 
   // codec selection
@@ -701,16 +759,16 @@ void initParams() {
   categories.push_back(Category("Codec options","quality"));
   params.push_back(Param("q","quality",true,pSetQuality,"0-50","set quality (less is better)"));
   params.push_back(Param("b","bitrate",true,pSetBitRate,"value","set bitrate (in Kbps)"));
-  params.push_back(Param("sp","speed",true,pSetEncSpeed,"quality|balanced|speed","set encoder quality/speed tradeoff (if supported)")); // TODO
-  params.push_back(Param("g","keyinterval",true,pSetGOP,"frames","set interval between intra-frames (keyframes)")); // TODO
+  params.push_back(Param("sp","speed",true,pSetEncSpeed,"quality|balanced|speed","set encoder quality/speed tradeoff (if supported)"));
+  params.push_back(Param("g","keyinterval",true,pSetGOP,"frames","set interval between intra-frames (keyframes)"));
   
   // audio options
   categories.push_back(Category("Audio options","audio"));
   params.push_back(Param("a","audio",true,pSetAudio,"jack|pulse|alsa|none","set audio engine (none disables audio recording)"));
-  params.push_back(Param("A","audiodev",true,pSetAudioDev,"name","set audio capture device")); // TODO
-  params.push_back(Param("ac","audiocodec",true,pSetAudioCodec,"codec","set audio codec")); // TODO
+  params.push_back(Param("A","audiodev",true,pSetAudioDev,"name","set audio capture device"));
+  params.push_back(Param("ac","audiocodec",true,pSetAudioCodec,"codec","set audio codec"));
   params.push_back(Param("al","limiter",false,pSetAudioLim,"","enable built-in audio limiter"));
-  params.push_back(Param("av","volume",true,pSetAudioVol,"vol","set audio volume, between 0.0 and 1.0")); // TODO
+  params.push_back(Param("av","volume",true,pSetAudioVol,"vol","set audio volume, between 0.0 and 1.0"));
   
   // VA-API -> NVENC codepath
   categories.push_back(Category("Hesse mode selection","hesse"));
@@ -757,15 +815,18 @@ int main(int argc, char** argv) {
   paused=false;
   hesse=false;
   absolPerf=false;
+  tenBit=false;
   audLimiter=false;
   audLimAmt=1;
   audGain=1;
   audioType=audioTypeJACK;
+  audName="";
   autoDevice=-1;
   brTime=curTime(CLOCK_MONOTONIC);
   tb=(AVRational){1,100000};
   
   encName="";
+  audEncName="pcm_f32le";
 
   initParams();
 
@@ -1119,6 +1180,36 @@ int main(int argc, char** argv) {
       av_dict_set(&encOpt,"profile","high444p",0);
     }
   }
+
+  if (hesse) {
+    switch (encSpeed) {
+      case encPerformance:
+        av_dict_set(&encOpt,"preset","fast",0);
+        break;
+      case encBalanced:
+        av_dict_set(&encOpt,"preset","medium",0);
+        break;
+      case encQuality:
+        av_dict_set(&encOpt,"preset","slow",0);
+        break;
+      default:
+        break;
+    }
+  } else {
+    switch (encSpeed) {
+      case encPerformance:
+        av_dict_set(&encOpt,"compression_level","7",0);
+        break;
+      case encBalanced:
+        av_dict_set(&encOpt,"compression_level","4",0);
+        break;
+      case encQuality:
+        av_dict_set(&encOpt,"compression_level","0",0);
+        break;
+      default:
+        break;
+    }
+  }
   
   if (out->oformat->flags&AVFMT_GLOBALHEADER)
     encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -1138,13 +1229,13 @@ int main(int argc, char** argv) {
       return 1;
       break;
   }
-  if ((audioType==audioTypeNone) || !ae->init("")) {
+  if ((audioType==audioTypeNone) || !ae->init(audName)) {
     if (audioType!=audioTypeNone) {
       logW("couldn't init audio.\n");
     }
     audioType=audioTypeNone;
   } else {
-    if ((audEncInfo=avcodec_find_encoder_by_name("pcm_f32le"))==NULL) {
+    if ((audEncInfo=avcodec_find_encoder_by_name(audEncName.c_str()))==NULL) {
       logE("audio codec not found D:\n");
       return 1;
     }
