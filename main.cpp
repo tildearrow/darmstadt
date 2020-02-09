@@ -653,7 +653,17 @@ bool pSetVideoCrop(string val) {
   return true;
 }
 
-bool pSetVideoScale(string) {
+bool pSetVideoScale(string val) {
+  if (val=="fill") {
+    sm=scaleFill;
+  } else if (val=="fit") {
+    sm=scaleFit;
+  } else if (val=="orig") {
+    sm=scaleOrig;
+  } else {
+    logE("it must be fill, fit or orig.\n");
+    return false;
+  }
   return true;
 }
 
@@ -743,7 +753,7 @@ void initParams() {
   params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
   params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay")); // TODO
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
-  params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format")); // TODO 10-bit mode
+  params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));
   params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
 
   // codec selection
@@ -798,6 +808,7 @@ int main(int argc, char** argv) {
   saWinCh.sa_flags=0;
   quit=false; newSize=false;
   syncMethod=syncVBlank;
+  sm=scaleFit;
   totalWritten=0;
   bitRate=0;
   bitRatePre=0;
@@ -1516,6 +1527,12 @@ int main(int argc, char** argv) {
       break;
     }
     
+    // resolution change support
+    if (!hesse) {
+      dw=fb->width;
+      dh=fb->height;
+    }
+    
     if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
       printf("\x1b[2K\x1b[1;31m%d: unable to prepare frame for the encoder!\x1b[m\n",frame);
       quit=true;
@@ -1556,7 +1573,6 @@ int main(int argc, char** argv) {
         printf("no surface sync %x\n",vaStat);
       }
 
-      sm=scaleFit;
     switch (sm) {
       case scaleFill:
         scaleRegion.x=0;
