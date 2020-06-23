@@ -668,7 +668,7 @@ bool pSetVideoScale(string val) {
 }
 
 bool pSetCursor(string) {
-  logE("Cursor capture isn't currently implemented yet...\n");
+  logW("Cursor capture isn't currently implemented yet...\n");
   return true;
 }
 
