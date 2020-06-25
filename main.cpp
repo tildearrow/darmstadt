@@ -668,6 +668,7 @@ bool pSetVideoScale(string val) {
 }
 
 bool pSetCursor(string) {
+  logW("Cursor capture isn't currently implemented yet...\n");
   return true;
 }
 
@@ -751,7 +752,7 @@ void initParams() {
   params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
   params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
   params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
-  params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay")); // TODO
+  params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay (Not Implemented Yet)")); // TODO
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
   params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));
   params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
