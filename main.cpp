@@ -1581,10 +1581,17 @@ int main(int argc, char** argv) {
         scaleRegion.height=oh;
         break;
       case scaleFit:
-        scaleRegion.x=0;
-        scaleRegion.y=0;
-        scaleRegion.width=ow;
-        scaleRegion.height=oh;
+        if (((dw*oh)/dh)<ow) {
+          scaleRegion.x=(frame/2)%32;//((dw*oh)/dh-ow)/2;
+          scaleRegion.y=0;
+          scaleRegion.width=(dw*oh)/dh;
+          scaleRegion.height=oh;
+        } else {
+          scaleRegion.x=0;
+          scaleRegion.y=((dh*ow)/dw-oh)/2;
+          scaleRegion.width=ow;
+          scaleRegion.height=(dh*ow)/dw;
+        }
         break;
       case scaleOrig:
         scaleRegion.x=(ow-dw)/2;
