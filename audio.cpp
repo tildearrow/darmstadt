@@ -1,6 +1,7 @@
 #include "darmstadt.h"
 
 bool AudioEngine::init(string devName) {
+  wantBlank=false;
   return false;
 }
 

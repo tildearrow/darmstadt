@@ -14,7 +14,7 @@ unsigned int planeid;
 
 int frame;
 int framerate;
-struct timespec btime, vtime, dtime;
+struct timespec btime, vtime, dtime, lastATime, sATime;
 
 struct timespec wtStart, wtEnd;
 
@@ -1377,6 +1377,8 @@ int main(int argc, char** argv) {
   frame=0;
   
   struct timespec nextMilestone=mkts(0,0);
+  lastATime=curTime(CLOCK_MONOTONIC);
+  sATime=lastATime;
   
   btime=mkts(0,0);
   
@@ -1480,7 +1482,9 @@ int main(int argc, char** argv) {
       // bitrate
       "\x1b[mrate: %s%6ldKbit "
       // size
-      "\x1b[msize: \x1b[1m%ldM"
+      "\x1b[msize: \x1b[1m%ldM "
+      // A/V sync
+      "\x1b[mA-V: \x1b[1m%dms"
       // end
       "\x1b[m\x1b[%d;1H\n",
       
@@ -1498,6 +1502,8 @@ int main(int argc, char** argv) {
       (bitRate>=30000000)?("\x1b[1;33m"):("\x1b[1;32m"),bitRate>>10,
       // size
       totalWritten>>20,
+      // A/V sync
+      (lastATime-sATime).tv_nsec/1000000,
       // end
       winSize.ws_row-1);
     
@@ -1742,11 +1748,13 @@ int main(int argc, char** argv) {
               break;
           }
         }
+        lastATime=audioPack->time;
         delete audioPack;
         audPacket.data=NULL;
         audPacket.size=0;
         av_init_packet(&audPacket);
         audFrame->pts+=1024;
+        sATime=sATime+mkts(0,23219955);
         if (avcodec_send_frame(audEncoder,audFrame)<0) {
           logW("couldn't write audio frame!\n");
           break;
@@ -1767,6 +1775,9 @@ int main(int argc, char** argv) {
             printf("\x1b[1;32mWARNING! audio write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
           }
           av_packet_unref(&audPacket);
+        }
+        if ((lastATime-sATime)>mkts(0,40000000)) {
+          ae->wantBlank=true;
         }
       }
     }

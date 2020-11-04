@@ -3,6 +3,7 @@
 bool PulseAudioEngine::init(string dn) {
   FILE* catcher;
   char tDevName[4096];
+  wantBlank=false;
   ac=NULL;
   
   asf.format=PA_SAMPLE_FLOAT32LE;
@@ -72,6 +73,11 @@ void* PulseAudioEngine::thr() {
     }
     ap.time=curTime(CLOCK_MONOTONIC);
     apqueue.push(new AudioPacket(ap));
+    if (wantBlank) {
+      wantBlank=false;
+      memset(ap.data,0,count*sizeof(float)*chan);
+      apqueue.push(new AudioPacket(ap));
+    }
   }
   return NULL;
 }

@@ -168,6 +168,7 @@ struct AudioPacket {
 
 class AudioEngine {
   public:
+    bool wantBlank;
     // read an audio packet. returns NULL if there aren't any.
     virtual AudioPacket* read();
     virtual int sampleRate();

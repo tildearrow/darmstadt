@@ -19,6 +19,11 @@ int JACKAudioEngine::process(jack_nframes_t count) {
       collPos=0;
       ap.time=curTime(CLOCK_MONOTONIC);
       apqueue.push(new AudioPacket(ap));
+      if (wantBlank) {
+        wantBlank=false;
+        memset(ap.data,0,count*sizeof(float)*chan);
+        apqueue.push(new AudioPacket(ap));
+      }
     }
   }
   
@@ -28,6 +33,7 @@ int JACKAudioEngine::process(jack_nframes_t count) {
 bool JACKAudioEngine::init(string dn) {
   size_t splitPos;
   string portName;
+  wantBlank=false;
   chan=0;
   collPos=0;  
   ac=jack_client_open("darmstadt",JackNoStartServer,&as,NULL);
