@@ -1416,6 +1416,7 @@ int main(int argc, char** argv) {
   vreply=vblank.reply;
   startSeq=vreply.sequence;
   int recal=0;
+  int arecal=0;
   
   ioctl(1,TIOCGWINSZ,&winSize);
   if (audioType!=audioTypeNone) ae->start();
@@ -1778,6 +1779,7 @@ int main(int argc, char** argv) {
         }
         if ((lastATime-sATime)>mkts(0,40000000)) {
           ae->wantBlank=true;
+          printf("\x1b[2K\x1b[0;33m%d: audio is late! (%d)\x1b[m\n",frame,++arecal);
         }
       }
     }

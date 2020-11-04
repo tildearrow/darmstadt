@@ -75,7 +75,7 @@ void* PulseAudioEngine::thr() {
     apqueue.push(new AudioPacket(ap));
     if (wantBlank) {
       wantBlank=false;
-      memset(ap.data,0,count*sizeof(float)*chan);
+      memset(ap.data,0,1024*sizeof(float)*asf.channels);
       apqueue.push(new AudioPacket(ap));
     }
   }
