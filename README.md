@@ -1,3 +1,7 @@
+# NOTE
+
+FFmpeg 4.3 totally breaks darmstadt using an AMD card.
+
 # darmstadt
 
 this is an experimental Linux full-hardware screen recorder for AMD and Intel cards.
