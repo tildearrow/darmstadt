@@ -18,6 +18,8 @@ int frame;
 int framerate;
 struct timespec btime, vtime, dtime, lastATime, sATime;
 
+int videoStalls=0;
+
 struct timespec wtStart, wtEnd;
 
 int dw, dh, ow, oh;
@@ -91,9 +93,7 @@ bool cacheEmpty, cacheRun;
 WriteCache cache;
 struct timespec brTime;
 
-void* badCodingPractice1;
-
-FILE* f;
+int f;
 
 int speeds[120];
 
@@ -188,6 +188,7 @@ static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *
         wtEnd=curTime(CLOCK_MONOTONIC);
         if ((wtEnd-wtStart)>mkts(0,16666667)) {
           printf("\x1b[1;32mWARNING! write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+          videoStalls++;
         }
         av_packet_unref(&enc_pkt);
     }
@@ -1405,7 +1406,7 @@ int main(int argc, char** argv) {
   }
   
   logD("opening file...\n");
-  if ((f=fopen(outname,"wb"))==NULL) {
+  if ((f=open(outname,O_CREAT|O_RDWR,0666))<0) {
     perror("could not open output file");
     return 1;
   }
@@ -1415,7 +1416,7 @@ int main(int argc, char** argv) {
     unsigned char* ioBuffer=(unsigned char*)av_malloc(DARM_AVIO_BUFSIZE+AV_INPUT_BUFFER_PADDING_SIZE);
     cache.setFile(f);
     logD("allocating the I/O context...\n");
-    AVIOContext* avioContext=avio_alloc_context(ioBuffer,DARM_AVIO_BUFSIZE,1,(void*)(f),NULL,&writeToCache,&seekCache);
+    AVIOContext* avioContext=avio_alloc_context(ioBuffer,DARM_AVIO_BUFSIZE,1,(void*)(&f),NULL,&writeToCache,&seekCache);
     out->pb=avioContext;
     cache.enable();
   }
@@ -1501,6 +1502,7 @@ int main(int argc, char** argv) {
   startSeq=vreply.sequence;
   int recal=0;
   int arecal=0;
+  int audioStalls=0;
   
   ioctl(1,TIOCGWINSZ,&winSize);
   if (audioType!=audioTypeNone) ae->start();
@@ -1564,7 +1566,7 @@ int main(int argc, char** argv) {
       // FPS
       "FPS:%s%3ld "
       // queue
-      "\x1b[mqueue: \x1b[1m%5dK "
+      "\x1b[mqueue: \x1b[1m%5d  "
       // bitrate
       "\x1b[mrate: %s%6ldKbit "
       // size
@@ -1583,7 +1585,7 @@ int main(int argc, char** argv) {
       // FPS
       (delta>=(50/fskip))?("\x1b[1;32m"):("\x1b[1;33m"),delta,
       // queue
-      (wbWritePos-wbReadPos)>>10,
+      cache.queueSize(),
       // bitrate
       (bitRate>=30000000)?("\x1b[1;33m"):("\x1b[1;32m"),bitRate>>10,
       // size
@@ -1864,6 +1866,7 @@ int main(int argc, char** argv) {
           avio_flush(out->pb);
           if ((wtEnd-wtStart)>mkts(0,16666667)) {
             printf("\x1b[1;32mWARNING! audio write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+            audioStalls++;
           }
           av_packet_unref(&audPacket);
         }
@@ -1896,7 +1899,7 @@ int main(int argc, char** argv) {
   cache.disable();
 
   av_free(out->pb->buffer);
-  fclose(f);
+  close(f);
   avformat_free_context(out);
   
   if (hesse) {
@@ -1928,6 +1931,9 @@ int main(int argc, char** argv) {
     }
   }
   printf("dropped frames: %d\n",recal);
+  printf("video write stalls: %d\n",videoStalls);
+  printf("audio resync count: %d\n",arecal);
+  printf("audio write stalls: %d\n",audioStalls);
   printf("repeated framebuffer handles: %d\n",repeatCount);
   logI("finished recording %.2ld:%.2ld:%.2ld.%.3ld (%d).\n",vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,frame);
   return 0;

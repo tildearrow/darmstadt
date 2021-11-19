@@ -232,7 +232,7 @@ struct CacheCommand {
 };
 
 class WriteCache {
-  FILE* o;
+  int o;
   bool running, shallStop, busy;
   pthread_t tid;
   std::queue<CacheCommand> cqueue;
@@ -241,8 +241,9 @@ class WriteCache {
 
     int write(unsigned char* buf, size_t len);
     int seek(ssize_t pos, int whence);
+    int queueSize();
     bool flush();
-    void setFile(FILE* f);
+    void setFile(int f);
     bool enable();
     bool disable();
     WriteCache();

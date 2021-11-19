@@ -10,11 +10,15 @@ void* WriteCache::run() {
       cqueue.pop();
       switch (cc.cmd) {
         case cWrite:
-          fwrite(cc.buf,1,cc.size,o);
+          if (::write(o,cc.buf,cc.size)<0) {
+            logE("error while writing! %s\n",strerror(errno));
+          }
           delete[] cc.buf;
           break;
         case cSeek:
-          fseek(o,cc.size,cc.whence);
+          if (lseek(o,cc.size,cc.whence)<0) {
+            logE("error while SEEKING! %s\n",strerror(errno));
+          }
           break;
         case cRead:
           logE("hey! you try'na read!\n");
@@ -30,7 +34,7 @@ void* WriteCache::run() {
 int WriteCache::write(unsigned char* buf, size_t len) {
   unsigned char* nbuf;
   if (!running) {
-    return fwrite(buf,1,len,o);
+    return ::write(o,buf,len);
   }
 
   // i hope memory allocs are fast
@@ -42,7 +46,7 @@ int WriteCache::write(unsigned char* buf, size_t len) {
 
 int WriteCache::seek(ssize_t pos, int whence) {
   if (!running) {
-    return fseek(o,pos,whence);
+    return lseek(o,pos,whence);
   }
   cqueue.push(CacheCommand(cSeek,NULL,pos,whence));
   return 0;
@@ -58,7 +62,7 @@ bool WriteCache::flush() {
   return true;
 }
 
-void WriteCache::setFile(FILE* f) {
+void WriteCache::setFile(int f) {
   o=f;
 }
 
@@ -88,5 +92,9 @@ bool WriteCache::disable() {
   return false;
 }
 
-WriteCache::WriteCache(): o(NULL), running(false), shallStop(false), busy(false), tid(-1) {
+int WriteCache::queueSize() {
+  return cqueue.size();
+}
+
+WriteCache::WriteCache(): o(-1), running(false), shallStop(false), busy(false), tid(-1) {
 }
