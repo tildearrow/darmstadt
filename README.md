@@ -15,6 +15,7 @@ the purpose of this program is to alleviate some issues with FFmpeg when trying 
 - stutter-free if your card is fast enough
 - synchronizes with your display, even if you were to change the refresh rate
 - records audio as well (JACK and PulseAudio supported)
+- optionally allows you to encode in software using Meitner mode
 
 # warning
 

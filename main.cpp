@@ -9,6 +9,8 @@ drmModePlane* plane;
 drmModeFB* fb;
 drmModeCrtc* disp;
 drmVBlank vblank;
+int oldHandle=-1;
+int repeatCount=0;
 
 unsigned int planeid;
 
@@ -89,14 +91,13 @@ bool cacheEmpty, cacheRun;
 WriteCache cache;
 struct timespec brTime;
 
-AVDictionary* badCodingPractice=NULL;
 void* badCodingPractice1;
 
 FILE* f;
 
 int speeds[120];
 
-const char* outname="out.mkv";
+const char* outname="out.nut";
 
 SyncMethod syncMethod;
 
@@ -123,7 +124,8 @@ AVRational tb;
 AVRational audiotb;
 
 // hesse: capture on AMD/Intel, encode on NVIDIA
-bool hesse, absolPerf, tenBit;
+// meitner: capture on AMD/Intel, encode using x264/x265
+bool hesse, meitner, absolPerf, tenBit;
 
 int writeToCache(void*, unsigned char* buf, int size) {
   bitRatePre+=size;
@@ -174,7 +176,6 @@ static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *
         if (ret)
             break;
         enc_pkt.stream_index = str->index;
-        str->cur_dts = frame->pts-1;
         //enc_pkt.pts = frame->pts;
         av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
         str->cur_dts = enc_pkt.pts-1;
@@ -260,7 +261,9 @@ const char* getVendor(int id) {
 }
 
 bool pSetH264(string) {
-  if (hesse) {
+  if (meitner) {
+    encName="libx264rgb";
+  } else if (hesse) {
     encName="h264_nvenc";
   } else {
     encName="h264_vaapi";
@@ -269,7 +272,9 @@ bool pSetH264(string) {
 }
 
 bool pSetHEVC(string) {
-  if (hesse) {
+  if (meitner) {
+    encName="libx265";
+  } else if (hesse) {
     encName="hevc_nvenc";
   } else {
     encName="hevc_vaapi";
@@ -476,6 +481,13 @@ bool pSetAudioVol(string val) {
     logE("it must be between 0.0 and 1.0.\n");
     return false;
   }
+  return true;
+}
+
+bool pMeitner(string) {
+  meitner=true;
+  hesse=true;
+  encName="libx264rgb";
   return true;
 }
 
@@ -785,6 +797,10 @@ void initParams() {
   categories.push_back(Category("Hesse mode selection","hesse"));
   params.push_back(Param("H","hesse",false,pHesse,"","enable hesse mode (use AMD/Intel card for capture and NVIDIA card for encoding)"));
   params.push_back(Param("B","hessebench",false,hesseBench,"","benchmark hesse overhead"));
+
+  // VA-API -> soft codepath
+  categories.push_back(Category("Meitner mode selection","meitner"));
+  params.push_back(Param("M","meitner",false,pMeitner,"","enable meitner mode (use AMD/Intel card for capture and software encoder)"));
 }
 
 // Intel IDs: 8086
@@ -826,6 +842,7 @@ int main(int argc, char** argv) {
   noSignal=false;
   paused=false;
   hesse=false;
+  meitner=false;
   absolPerf=false;
   tenBit=false;
   audLimiter=false;
@@ -1038,6 +1055,7 @@ int main(int argc, char** argv) {
   // DRM INIT END //
   
   // VA-API INIT BEGIN //
+  logD("getting VA display\n");
   if (devImportance(autoDevice)==1) {
     vaInst=vaGetDisplayDRM(renderfd);
   } else {
@@ -1047,6 +1065,7 @@ int main(int argc, char** argv) {
     logE("could not open VA-API...\n");
     return 1;
   }
+  logD("initializing VA-API\n");
   if (vaInitialize(vaInst,&discvar1,&discvar2)!=VA_STATUS_SUCCESS) {
     logE("could not initialize VA-API...\n");
     return 1;
@@ -1064,14 +1083,20 @@ int main(int argc, char** argv) {
     }
   }
   
+  logD("querying image formats\n");
   vaQueryImageFormats(vaInst,allowedFormats,&allowedFormatsSize);
   
-  theFormat=0;
+  theFormat=-1;
   for (int i=0; i<allowedFormatsSize; i++) {
     if (allowedFormats[i].fourcc==VA_FOURCC_BGRX) {
       theFormat=i;
+      logD("the format is %d\n",theFormat);
       break;
     }
+  }
+  if (theFormat==-1) {
+    logE("no compatible pixel format found!\n");
+    return 1;
   }
   
   coAttr[0].type=VASurfaceAttribUsageHint;
@@ -1079,19 +1104,24 @@ int main(int argc, char** argv) {
   coAttr[0].value.type=VAGenericValueTypeInteger;
   coAttr[0].value.value.i=VA_SURFACE_ATTRIB_USAGE_HINT_GENERIC;
   
+  logD("creating VA surface...\n");
   if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,ow,oh,portFrame,1,coAttr,1))!=VA_STATUS_SUCCESS) {
     logE("could not create surface for encoding... %x\n",vaStat);
     return 1;
   }
   
+  logD("creating VA config\n");
   if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConf)!=VA_STATUS_SUCCESS) {
     logE("no videoproc.\n");
     return 1;
   }
+
+  logD("creating VA format converter context\n");
   if (vaCreateContext(vaInst,vaConf,ow,oh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
     logE("we can't scale...\n");
     return 1;
   }
+  logD("allocating context for FFmpeg\n");
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
   extractSource=(AVHWDeviceContext*)wrappedSource->data;
   
@@ -1102,6 +1132,7 @@ int main(int argc, char** argv) {
       logD("check me later\n");
     }
     ((AVVAAPIDeviceContext*)(extractSource->hwctx))->display=vaInst;
+    logD("initializing the context\n");
     av_hwdevice_ctx_init(ffhardInst);
   } else {
     logD("creating image in memory\n");
@@ -1110,6 +1141,7 @@ int main(int argc, char** argv) {
   
   // FFMPEG INIT BEGIN //
   // open file
+  logD("creating output context\n");
   avformat_alloc_output_context2(&out,NULL,NULL,outname);
   if (out==NULL) {
     logE("couldn't open output...\n");
@@ -1119,6 +1151,9 @@ int main(int argc, char** argv) {
   /// Video
   logD("creating encoder\n");
   // create stream
+  if (meitner && absolPerf) {
+    encName="libx264rgb";
+  }
   if ((encInfo=avcodec_find_encoder_by_name(encName.c_str()))==NULL) {
     logE("your card does not support %s.\n",encName.c_str());
     return 1;
@@ -1189,23 +1224,41 @@ int main(int argc, char** argv) {
   
   if (hesse) {
     if (absolPerf) {
-      av_dict_set(&encOpt,"profile","high444p",0);
+      if (!meitner) {
+        av_dict_set(&encOpt,"profile","high444p",0);
+      }
     }
   }
 
   if (hesse) {
-    switch (encSpeed) {
-      case encPerformance:
-        av_dict_set(&encOpt,"preset","fast",0);
-        break;
-      case encBalanced:
-        av_dict_set(&encOpt,"preset","medium",0);
-        break;
-      case encQuality:
-        av_dict_set(&encOpt,"preset","slow",0);
-        break;
-      default:
-        break;
+    if (meitner) {
+      switch (encSpeed) {
+        case encPerformance:
+          av_dict_set(&encOpt,"preset","ultrafast",0);
+          break;
+        case encBalanced:
+          av_dict_set(&encOpt,"preset","faster",0);
+          break;
+        case encQuality:
+          av_dict_set(&encOpt,"preset","fast",0);
+          break;
+        default:
+          break;
+      }
+    } else {
+      switch (encSpeed) {
+        case encPerformance:
+          av_dict_set(&encOpt,"preset","fast",0);
+          break;
+        case encBalanced:
+          av_dict_set(&encOpt,"preset","medium",0);
+          break;
+        case encQuality:
+          av_dict_set(&encOpt,"preset","slow",0);
+          break;
+        default:
+          break;
+      }
     }
   } else {
     switch (encSpeed) {
@@ -1223,8 +1276,10 @@ int main(int argc, char** argv) {
     }
   }
   
-  if (out->oformat->flags&AVFMT_GLOBALHEADER)
+  if (out->oformat->flags&AVFMT_GLOBALHEADER) {
+    logD("video encoder should have global header...\n");
     encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+  }
   
   /// Audio
   switch (audioType) {
@@ -1241,20 +1296,26 @@ int main(int argc, char** argv) {
       return 1;
       break;
   }
+  if (audioType!=audioTypeNone) {
+    logD("initializing audio...\n");
+  }
   if ((audioType==audioTypeNone) || !ae->init(audName)) {
     if (audioType!=audioTypeNone) {
       logW("couldn't init audio.\n");
     }
     audioType=audioTypeNone;
   } else {
+    logD("finding audio codec (%s)...\n",audEncName.c_str());
     if ((audEncInfo=avcodec_find_encoder_by_name(audEncName.c_str()))==NULL) {
       logE("audio codec not found D:\n");
       return 1;
     }
     
+    logD("creating audio stream...\n");
     audStream=avformat_new_stream(out,NULL);
     audStream->id=out->nb_streams-1;
     
+    logD("creating audio codec context...\n");
     audEncoder=avcodec_alloc_context3(audEncInfo);
     audEncoder->sample_fmt=audEncInfo->sample_fmts?audEncInfo->sample_fmts[0]:AV_SAMPLE_FMT_FLTP;
     audEncoder->sample_rate=ae->sampleRate();
@@ -1289,29 +1350,45 @@ int main(int argc, char** argv) {
     }
     
     if (out->oformat->flags&AVFMT_GLOBALHEADER) {
+      logD("audio encoder should have global header...\n");
       audEncoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
   }
   
+  AVDictionary* outOpt=NULL;
+  av_dict_set(&outOpt,"global_header","1",0);
+
+  logD("initializing output...\n");
+  /*if (avformat_init_output(out,&outOpt)<0) {
+    logE("error while initializing the output!\n");
+    return 1;
+  }*/
+  
   // Open Video
+  logD("opening video encoder\n");
   if ((avcodec_open2(encoder,encInfo,&encOpt))<0) {
     logE("could not open encoder :(\n");
     return 1;
   }
+  logD("video parameters from context...\n");
   avcodec_parameters_from_context(stream->codecpar,encoder);
   
   // Open Audio
   if (audioType!=audioTypeNone) {
+    logD("opening audio encoder\n");
     if ((avcodec_open2(audEncoder,audEncInfo,&audEncOpt))<0) {
       logE("could not open encoder :(\n");
       return 1;
     }
+    logD("audio parameters from context...\n");
     avcodec_parameters_from_context(audStream->codecpar,audEncoder);
     
+    logD("allocating audio frame\n");
     audFrame=av_frame_alloc();
     if (audFrame==NULL) {
       logE("couldn't allocate audio frame!\n");
     }
+    audFrame->pts=1024;
     audFrame->format=audEncoder->sample_fmt;
     audFrame->channel_layout=audEncoder->channel_layout;
     if (audEncInfo->capabilities&AV_CODEC_CAP_VARIABLE_FRAME_SIZE) {
@@ -1320,21 +1397,24 @@ int main(int argc, char** argv) {
       audFrame->nb_samples=audEncoder->frame_size;
     }
     printf("format: %d\n",audFrame->format);
-    audFrame->pts=0;
+    logD("getting audio buffer...\n");
     if (av_frame_get_buffer(audFrame,0)<0) {
       logE("are you being serious?\n");
       return 1;
     }
   }
   
+  logD("opening file...\n");
   if ((f=fopen(outname,"wb"))==NULL) {
     perror("could not open output file");
     return 1;
   }
   
   if (!(out->oformat->flags & AVFMT_NOFILE)) {
+    logD("creating I/O buffer...\n");
     unsigned char* ioBuffer=(unsigned char*)av_malloc(DARM_AVIO_BUFSIZE+AV_INPUT_BUFFER_PADDING_SIZE);
     cache.setFile(f);
+    logD("allocating the I/O context...\n");
     AVIOContext* avioContext=avio_alloc_context(ioBuffer,DARM_AVIO_BUFSIZE,1,(void*)(f),NULL,&writeToCache,&seekCache);
     out->pb=avioContext;
     cache.enable();
@@ -1342,7 +1422,8 @@ int main(int argc, char** argv) {
 
   int retv;
   char e[4096];
-  if ((retv=avformat_write_header(out,&badCodingPractice))<0) {
+  logD("writing header!\n");
+  if ((retv=avformat_write_header(out,&outOpt))<0) {
     av_make_error_string(e,4095,retv);
     logE("could not write header... %s\n",e);
     return 1;
@@ -1361,11 +1442,14 @@ int main(int argc, char** argv) {
   wbWritePos=0;
   
   printf("\x1b[1m|\x1b[m\n");
-  if (hesse) {
-    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
+  if (meitner) {
+    printf("\x1b[1m|\x1b[0;34m ~~~~> \x1b[1;33mDARMSTADT ~~DUAL-MUX EDITION~~ (meitner mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
+  } else if (hesse) {
+    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT ~~DUAL-MUX EDITION~~ (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
   } else {
-    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT ~~DUAL-MUX EDITION~~ \x1b[1;32m" DARM_VERSION "\x1b[m\n");
   }
+  if (qp==0) printf("\x1b[1;31m> !!! -> -> LOSSLESS <- <- !!! <\x1b[m\n");
   printf("\x1b[1m|\x1b[m\n");
   printf("\x1b[1m- screen %dx%d, output %dx%d, %s\x1b[m\n",dw,dh,ow,oh,absolPerf?("4:4:4"):("4:2:0"));
   if (audioType!=audioTypeNone) {
@@ -1439,9 +1523,10 @@ int main(int argc, char** argv) {
     
     //printf("PRE: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
     
+    /*
     while ((curTime(CLOCK_MONOTONIC))<mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)) {
       usleep(2000);
-    }
+    }*/
 
     //printf("POST: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
    
@@ -1534,6 +1619,11 @@ int main(int argc, char** argv) {
       quit=true;
       break;
     }
+    if (oldHandle==fb->handle && !hesse) {
+      printf("\x1b[2K\x1b[1;33m%d: repeated handles! may cause stutter!\x1b[m\n",frame);
+      repeatCount++;
+    }
+    oldHandle=fb->handle;
     
     // resolution change support
     if (!hesse) {
@@ -1546,7 +1636,6 @@ int main(int argc, char** argv) {
       quit=true;
       break;
     }
-    //printf("prime FD: %d\n",primefd);
     
     dsScanOff[dsScanOffPos++]=(wtEnd-wtStart).tv_nsec;
     dsScanOffPos&=1023;
@@ -1590,7 +1679,7 @@ int main(int argc, char** argv) {
         break;
       case scaleFit:
         if (((dw*oh)/dh)<ow) {
-          scaleRegion.x=(frame/2)%32;//((dw*oh)/dh-ow)/2;
+          scaleRegion.x=0;//((dw*oh)/dh-ow)/2;
           scaleRegion.y=0;
           scaleRegion.width=(dw*oh)/dh;
           scaleRegion.height=oh;
@@ -1645,6 +1734,7 @@ int main(int argc, char** argv) {
     } else {
       // VA-API ENCODE SINGLE-THREAD CODE BEGIN //
       hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
+      //printf("PTS: %d\n",hardFrame->pts);
   
       // convert
       massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
@@ -1754,7 +1844,6 @@ int main(int argc, char** argv) {
         audPacket.data=NULL;
         audPacket.size=0;
         av_init_packet(&audPacket);
-        audFrame->pts+=1024;
         sATime=sATime+mkts(0,23219955);
         if (avcodec_send_frame(audEncoder,audFrame)<0) {
           logW("couldn't write audio frame!\n");
@@ -1765,11 +1854,12 @@ int main(int argc, char** argv) {
           audPacket.stream_index=audStream->index;
           //audStream->cur_dts=audFrame->pts;
           av_packet_rescale_ts(&audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
-          audStream->cur_dts=audPacket.pts;
+          audStream->cur_dts=audPacket.pts-1024;
           //printf("tb: %d/%d dts: %ld\n",audStream->time_base.num,audStream->time_base.den,audStream->cur_dts);
           if (av_write_frame(out,&audPacket)<0) {
-            printf("unable to write frame");
+            printf("unable to write frame ATTENTION\n");
           }
+          audFrame->pts+=1024;
           avformat_flush(out);
           avio_flush(out->pb);
           if ((wtEnd-wtStart)>mkts(0,16666667)) {
@@ -1838,6 +1928,7 @@ int main(int argc, char** argv) {
     }
   }
   printf("dropped frames: %d\n",recal);
+  printf("repeated framebuffer handles: %d\n",repeatCount);
   logI("finished recording %.2ld:%.2ld:%.2ld.%.3ld (%d).\n",vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,frame);
   return 0;
 }
