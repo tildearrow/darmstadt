@@ -4,10 +4,16 @@ void* WriteCache::run() {
   CacheCommand cc;
   do {
     usleep(50000);
-    while (!cqueue.empty()) {
+    while (true) {
+      m.lock();
+      if (cqueue.empty()) {
+        m.unlock();
+        break;
+      }
       busy=true;
       cc=cqueue.front();
-      cqueue.pop();
+      cqueue.pop_front();
+      m.unlock();
       switch (cc.cmd) {
         case cWrite:
           if (::write(o,cc.buf,cc.size)<0) {
@@ -38,9 +44,15 @@ int WriteCache::write(unsigned char* buf, size_t len) {
   }
 
   // i hope memory allocs are fast
+  // TODO: this is completely pointless.
+  //       when recording in lossless mode the bitrate goes up the sky
+  //       and these allocations immediately push the kernel too far.
+  //       the solution? make a huge ring buffer and rely on it
   nbuf=new unsigned char[len];
   memcpy(nbuf,buf,len);
-  cqueue.push(CacheCommand(cWrite,nbuf,len,0));
+  m.lock();
+  cqueue.push_back(CacheCommand(cWrite,nbuf,len,0));
+  m.unlock();
   return len;
 }
 
@@ -48,7 +60,9 @@ int WriteCache::seek(ssize_t pos, int whence) {
   if (!running) {
     return lseek(o,pos,whence);
   }
-  cqueue.push(CacheCommand(cSeek,NULL,pos,whence));
+  m.lock();
+  cqueue.push_back(CacheCommand(cSeek,NULL,pos,whence));
+  m.unlock();
   return 0;
 }
 
@@ -92,8 +106,14 @@ bool WriteCache::disable() {
   return false;
 }
 
-int WriteCache::queueSize() {
-  return cqueue.size();
+size_t WriteCache::queueSize() {
+  size_t ret=0;
+  m.lock();
+  for (CacheCommand& i: cqueue) {
+    if (i.cmd==cWrite) ret+=i.size;
+  }
+  m.unlock();
+  return ret;
 }
 
 WriteCache::WriteCache(): o(-1), running(false), shallStop(false), busy(false), tid(-1) {

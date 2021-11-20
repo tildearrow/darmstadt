@@ -129,6 +129,7 @@ bool hesse, meitner, absolPerf, tenBit;
 
 int writeToCache(void*, unsigned char* buf, int size) {
   bitRatePre+=size;
+  totalWritten+=size;
   if ((curTime(CLOCK_MONOTONIC)-brTime)>mkts(2,0)) {
     brTime=curTime(CLOCK_MONOTONIC);
     bitRate=bitRatePre*8/2;
@@ -1566,7 +1567,7 @@ int main(int argc, char** argv) {
       // FPS
       "FPS:%s%3ld "
       // queue
-      "\x1b[mqueue: \x1b[1m%5d  "
+      "\x1b[mqueue: \x1b[1m%6dK "
       // bitrate
       "\x1b[mrate: %s%6ldKbit "
       // size
@@ -1585,7 +1586,7 @@ int main(int argc, char** argv) {
       // FPS
       (delta>=(50/fskip))?("\x1b[1;32m"):("\x1b[1;33m"),delta,
       // queue
-      cache.queueSize(),
+      cache.queueSize()>>10,
       // bitrate
       (bitRate>=30000000)?("\x1b[1;33m"):("\x1b[1;32m"),bitRate>>10,
       // size

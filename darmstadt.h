@@ -1,44 +1,5 @@
 // ~> DARMSTADT <~ - low-overhead full-hardware screen capture.
-//
-// ...I need to write this little note.
-// this project was originally designed for my own internal usage during
-// early 2019, as a result of severe flaws (such as stuttering) with
-// FFmpeg and OBS.
-// since then, I have been tuning the software, trying to achieve
-// 4K60 frame perfection.
-// I went as far as having to practice raster mastery and write caching.
-// .......................
-// ...until...
-// Shiny.............
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// -AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!!!!!!!1
+// so many things have occurred since...
 
 #include <stdio.h>
 #include <math.h>
@@ -60,7 +21,9 @@
 #include <xf86drmMode.h>
 #include <stdexcept>
 #include <string>
+#include <deque>
 #include <queue>
+#include <mutex>
 
 #include <jack/jack.h>
 
@@ -235,13 +198,14 @@ class WriteCache {
   int o;
   bool running, shallStop, busy;
   pthread_t tid;
-  std::queue<CacheCommand> cqueue;
+  std::deque<CacheCommand> cqueue;
+  std::mutex m;
   public:
     void* run();
 
     int write(unsigned char* buf, size_t len);
     int seek(ssize_t pos, int whence);
-    int queueSize();
+    size_t queueSize();
     bool flush();
     void setFile(int f);
     bool enable();
