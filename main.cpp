@@ -1419,7 +1419,7 @@ int main(int argc, char** argv) {
     logD("allocating the I/O context...\n");
     AVIOContext* avioContext=avio_alloc_context(ioBuffer,DARM_AVIO_BUFSIZE,1,(void*)(&f),NULL,&writeToCache,&seekCache);
     out->pb=avioContext;
-    cache.enable();
+    cache.enable(DARM_RINGBUF_SIZE);
   }
 
   int retv;

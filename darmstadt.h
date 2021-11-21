@@ -43,6 +43,8 @@ extern "C" {
 
 #define DARM_VERSION "v3.0pre"
 
+#define DARM_RINGBUF_SIZE 16777216
+
 #define S(x) std::string(x)
 typedef std::string string;
 
@@ -200,6 +202,9 @@ class WriteCache {
   pthread_t tid;
   std::deque<CacheCommand> cqueue;
   std::mutex m;
+  unsigned char* ringBuf;
+  size_t ringBufSize;
+  ssize_t ringBufPosR, ringBufPosW;
   public:
     void* run();
 
@@ -208,7 +213,7 @@ class WriteCache {
     size_t queueSize();
     bool flush();
     void setFile(int f);
-    bool enable();
+    bool enable(size_t ringSize);
     bool disable();
     WriteCache();
 };

@@ -19,7 +19,14 @@ void* WriteCache::run() {
           if (::write(o,cc.buf,cc.size)<0) {
             logE("error while writing! %s\n",strerror(errno));
           }
-          delete[] cc.buf;
+          if (cc.whence==1) {
+            m.lock();
+            ringBufPosR+=cc.size;
+            if (ringBufPosR>=ringBufSize) ringBufPosR-=ringBufSize;
+            m.unlock();
+          } else {
+            delete[] cc.buf;
+          }
           break;
         case cSeek:
           if (lseek(o,cc.size,cc.whence)<0) {
@@ -43,16 +50,42 @@ int WriteCache::write(unsigned char* buf, size_t len) {
     return ::write(o,buf,len);
   }
 
-  // i hope memory allocs are fast
-  // TODO: this is completely pointless.
-  //       when recording in lossless mode the bitrate goes up the sky
-  //       and these allocations immediately push the kernel too far.
-  //       the solution? make a huge ring buffer and rely on it
-  nbuf=new unsigned char[len];
-  memcpy(nbuf,buf,len);
+  // **NEW RING BUFFER CODE**
   m.lock();
-  cqueue.push_back(CacheCommand(cWrite,nbuf,len,0));
+  ssize_t remaining=ringBufPosR-ringBufPosW-1;
   m.unlock();
+  if (remaining<=0) remaining+=ringBufSize;
+  if (remaining<len) {
+    // worst case: just allocate memory
+    printf("not enough space in the ringbuffer! allocating memory...\n");
+    nbuf=new unsigned char[len];
+    memcpy(nbuf,buf,len);
+    m.lock();
+    cqueue.push_back(CacheCommand(cWrite,nbuf,len,0));
+    m.unlock();
+  } else {
+    ssize_t boundRemain=ringBufSize-ringBufPosW;
+    if (boundRemain<len) {
+      // write two times
+      unsigned char* rbAddr=ringBuf+ringBufPosW;
+      memcpy(rbAddr,buf,boundRemain);
+      memcpy(ringBuf,buf+boundRemain,len-boundRemain);
+      m.lock();
+      cqueue.push_back(CacheCommand(cWrite,rbAddr,boundRemain,1));
+      cqueue.push_back(CacheCommand(cWrite,ringBuf,len-boundRemain,1));
+      m.unlock();
+    } else {
+      // write once
+      unsigned char* rbAddr=ringBuf+ringBufPosW;
+      memcpy(rbAddr,buf,len);
+      m.lock();
+      cqueue.push_back(CacheCommand(cWrite,rbAddr,len,1));
+      m.unlock();
+    }
+    ringBufPosW+=len;
+    if (ringBufPosW>=ringBufSize) ringBufPosW-=ringBufSize;
+  }
+
   return len;
 }
 
@@ -84,7 +117,13 @@ void* wcRun(void* inst) {
   return ((WriteCache*)inst)->run();
 }
 
-bool WriteCache::enable() {
+bool WriteCache::enable(size_t ringSize) {
+  if (ringBuf==NULL) {
+    ringBufSize=ringSize;
+    ringBuf=new unsigned char[ringBufSize];
+    // clean the ring buffer and force it to be allocated
+    memset(ringBuf,0,ringBufSize);
+  }
   if (!running) {
     shallStop=false;
     running=true;
@@ -116,5 +155,5 @@ size_t WriteCache::queueSize() {
   return ret;
 }
 
-WriteCache::WriteCache(): o(-1), running(false), shallStop(false), busy(false), tid(-1) {
+WriteCache::WriteCache(): o(-1), running(false), shallStop(false), busy(false), tid(-1), ringBuf(NULL), ringBufSize(DARM_RINGBUF_SIZE), ringBufPosR(0), ringBufPosW(0) {
 }
