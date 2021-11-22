@@ -1453,7 +1453,11 @@ int main(int argc, char** argv) {
   }
   if (qp==0) printf("\x1b[1;31m> !!! -> -> LOSSLESS <- <- !!! <\x1b[m\n");
   printf("\x1b[1m|\x1b[m\n");
-  printf("\x1b[1m- screen %dx%d, output %dx%d, %s\x1b[m\n",dw,dh,ow,oh,absolPerf?("4:4:4"):("4:2:0"));
+  if (meitner) {
+    printf("\x1b[1m- screen %dx%d, output %dx%d, %s\x1b[m\n",dw,dh,ow,oh,"RGB 4:4:4");
+  } else {
+    printf("\x1b[1m- screen %dx%d, output %dx%d, YUV %s\x1b[m\n",dw,dh,ow,oh,absolPerf?("4:4:4"):("4:2:0"));
+  }
   if (audioType!=audioTypeNone) {
     printf("\x1b[1m- audio from %s, %dHz (%d channels)\n",ae->engineName(),ae->sampleRate(),ae->channels());
   }
