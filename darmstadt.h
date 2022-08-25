@@ -35,6 +35,7 @@
 extern "C" {
   #include <libavcodec/avcodec.h>
   #include <libavformat/avformat.h>
+  #include <libavutil/channel_layout.h>
   #include <libavutil/hwcontext.h>
   #include <libavutil/hwcontext_vaapi.h>
 }
@@ -43,7 +44,7 @@ extern "C" {
 
 #define DARM_VERSION "v3.0pre"
 
-#define DARM_RINGBUF_SIZE 16777216
+#define DARM_RINGBUF_SIZE 134217728
 
 #define S(x) std::string(x)
 typedef std::string string;
@@ -217,3 +218,5 @@ class WriteCache {
     bool disable();
     WriteCache();
 };
+
+extern bool quit;

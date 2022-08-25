@@ -2,7 +2,7 @@
 
 string strFormat(const char* format, ...) {
   va_list va;
-  char* str;
+  char* str=NULL;
   string ret;
   va_start(va,format);
 #ifdef _WIN32
@@ -15,11 +15,16 @@ string strFormat(const char* format, ...) {
 #else
   if (vasprintf(&str,format,va)<0) {
     va_end(va);
+    if (str!=NULL) {
+      free(str);
+    }
     return string("");
   }
 #endif
   va_end(va);
   ret=str;
-  delete[] str;
+  if (str!=NULL) {
+    free(str);
+  }
   return ret;
 }

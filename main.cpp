@@ -64,7 +64,7 @@ struct timespec tStart, tEnd;
 // VIDEO //
 AVStream* stream;
 AVCodecContext* encoder;
-AVCodec* encInfo;
+const AVCodec* encInfo;
 AVFrame* hardFrame;
 AVBufferRef* ffhardInst;
 AVBufferRef* wrappedSource;
@@ -77,10 +77,10 @@ AVDictionary* encOpt;
 // AUDIO //
 AVStream* audStream;
 AVCodecContext* audEncoder;
-AVCodec* audEncInfo;
+const AVCodec* audEncInfo;
 AVFrame* audFrame;
 AVDictionary* audEncOpt;
-AVPacket audPacket;
+AVPacket* audPacket;
 string audName;
 
 AVFormatContext* out;
@@ -164,36 +164,38 @@ void* unbuff(void*) {
 static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout, AVStream* str)
 {
     int ret = 0;
-    AVPacket enc_pkt;
-    enc_pkt.data = NULL;
-    enc_pkt.size = 0;
-    av_init_packet(&enc_pkt);
+    AVPacket* enc_pkt=av_packet_alloc();
+    if (enc_pkt==NULL) {
+      logW("couldn't allocate packet!\n");
+      return -1;
+    }
     if ((ret = avcodec_send_frame(avctx, frame)) < 0) {
         logW("couldn't write frame! %s\n",strerror(-ret));
         goto end;
     }
     while (1) {
-        ret = avcodec_receive_packet(avctx, &enc_pkt);
+        ret = avcodec_receive_packet(avctx, enc_pkt);
         if (ret)
             break;
-        enc_pkt.stream_index = str->index;
-        //enc_pkt.pts = frame->pts;
-        av_packet_rescale_ts(&enc_pkt,tb,str->time_base);
-        str->cur_dts = enc_pkt.pts-1;
+        enc_pkt->stream_index = str->index;
+        //enc_pkt->duration=0;
+        //enc_pkt->dts = frame->pts;
+        av_packet_rescale_ts(enc_pkt,tb,str->time_base);
+        // what was this again?
+        //str->cur_dts = enc_pkt->pts-1;
         wtStart=curTime(CLOCK_MONOTONIC);
-        if (av_write_frame(fout,&enc_pkt)<0) {
-          printf("unable to write frame");
-}
-        avformat_flush(fout);
+        if (av_write_frame(fout,enc_pkt)<0) {
+          logE("unable to write frame!!!!\n");
+        }
         avio_flush(fout->pb);
         wtEnd=curTime(CLOCK_MONOTONIC);
         if ((wtEnd-wtStart)>mkts(0,16666667)) {
           printf("\x1b[1;32mWARNING! write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
           videoStalls++;
         }
-        av_packet_unref(&enc_pkt);
     }
 end:
+    av_packet_free(&enc_pkt);
     ret = ((ret == AVERROR(EAGAIN)) ? 0 : -1);
     return ret;
 }
@@ -820,6 +822,8 @@ int main(int argc, char** argv) {
   drmVersionPtr ver;
   struct sigaction saTerm;
   struct sigaction saWinCh;
+  memset(&saTerm,0,sizeof(struct sigaction));
+  memset(&saWinCh,0,sizeof(struct sigaction));
   saTerm.sa_handler=handleTerm;
   saWinCh.sa_handler=handleWinCh;
   sigemptyset(&saTerm.sa_mask);
@@ -1144,6 +1148,7 @@ int main(int argc, char** argv) {
   // FFMPEG INIT BEGIN //
   // open file
   logD("creating output context\n");
+  unlink(outname);
   avformat_alloc_output_context2(&out,NULL,NULL,outname);
   if (out==NULL) {
     logE("couldn't open output...\n");
@@ -1162,10 +1167,10 @@ int main(int argc, char** argv) {
   }
   
   stream=avformat_new_stream(out,NULL);
-  stream->id=out->nb_streams-1;
   // TODO: possibly change this to 2400
   //       (for 50, 60, 100, 120 and 144)
   stream->time_base=(AVRational){1,900};
+  stream->start_time=0;
   
   encoder=avcodec_alloc_context3(encInfo);
   
@@ -1315,7 +1320,7 @@ int main(int argc, char** argv) {
     
     logD("creating audio stream...\n");
     audStream=avformat_new_stream(out,NULL);
-    audStream->id=out->nb_streams-1;
+    audStream->start_time=0;
     
     logD("creating audio codec context...\n");
     audEncoder=avcodec_alloc_context3(audEncInfo);
@@ -1391,6 +1396,7 @@ int main(int argc, char** argv) {
       logE("couldn't allocate audio frame!\n");
     }
     audFrame->pts=1024;
+    audFrame->pkt_dts=1024;
     audFrame->format=audEncoder->sample_fmt;
     audFrame->channel_layout=audEncoder->channel_layout;
     if (audEncInfo->capabilities&AV_CODEC_CAP_VARIABLE_FRAME_SIZE) {
@@ -1571,13 +1577,13 @@ int main(int argc, char** argv) {
       // FPS
       "FPS:%s%3ld "
       // queue
-      "\x1b[mqueue: \x1b[1m%6dK "
+      "\x1b[mqueue: \x1b[1m%6ldK "
       // bitrate
       "\x1b[mrate: %s%6ldKbit "
       // size
       "\x1b[msize: \x1b[1m%ldM "
       // A/V sync
-      "\x1b[mA-V: \x1b[1m%dms"
+      "\x1b[mA-V: \x1b[1m%ldms"
       // end
       "\x1b[m\x1b[%d;1H\n",
       
@@ -1724,6 +1730,7 @@ int main(int argc, char** argv) {
     if (hesse) {
       // HESSE NVENC CODE BEGIN //
       hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
+      hardFrame->pkt_dts=hardFrame->pts;
 
       // how come this fails? we need to rescale!
       if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
@@ -1741,6 +1748,7 @@ int main(int argc, char** argv) {
     } else {
       // VA-API ENCODE SINGLE-THREAD CODE BEGIN //
       hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
+      hardFrame->pkt_dts=hardFrame->pts;
       //printf("PTS: %d\n",hardFrame->pts);
   
       // convert
@@ -1848,32 +1856,38 @@ int main(int argc, char** argv) {
         }
         lastATime=audioPack->time;
         delete audioPack;
-        audPacket.data=NULL;
-        audPacket.size=0;
-        av_init_packet(&audPacket);
         sATime=sATime+mkts(0,23219955);
         if (avcodec_send_frame(audEncoder,audFrame)<0) {
           logW("couldn't write audio frame!\n");
           break;
         }
         while (1) {
-          if (avcodec_receive_packet(audEncoder,&audPacket)) break;
-          audPacket.stream_index=audStream->index;
+          audPacket=av_packet_alloc();
+          if (audPacket==NULL) {
+            logW("couldn't allocate audio packet!\n");
+            break;
+          }
+          if (avcodec_receive_packet(audEncoder,audPacket)) {
+            av_packet_free(&audPacket);
+            break;
+          }
+          audPacket->stream_index=audStream->index;
           //audStream->cur_dts=audFrame->pts;
-          av_packet_rescale_ts(&audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
-          audStream->cur_dts=audPacket.pts-1024;
+          audPacket->dts=audPacket->pts;
+          av_packet_rescale_ts(audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
+          //audStream->cur_dts=audPacket->pts-1024;
           //printf("tb: %d/%d dts: %ld\n",audStream->time_base.num,audStream->time_base.den,audStream->cur_dts);
-          if (av_write_frame(out,&audPacket)<0) {
+          if (av_write_frame(out,audPacket)<0) {
             printf("unable to write frame ATTENTION\n");
           }
           audFrame->pts+=1024;
-          avformat_flush(out);
+          audFrame->pkt_dts+=1024;
           avio_flush(out->pb);
           if ((wtEnd-wtStart)>mkts(0,16666667)) {
             printf("\x1b[1;32mWARNING! audio write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
             audioStalls++;
           }
-          av_packet_unref(&audPacket);
+          av_packet_free(&audPacket);
         }
         if ((lastATime-sATime)>mkts(0,40000000)) {
           ae->wantBlank=true;

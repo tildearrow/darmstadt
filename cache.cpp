@@ -17,6 +17,7 @@ void* WriteCache::run() {
       switch (cc.cmd) {
         case cWrite:
           if (::write(o,cc.buf,cc.size)<0) {
+            if (errno==ENOSPC) quit=true;
             logE("error while writing! %s\n",strerror(errno));
           }
           if (cc.whence==1) {
