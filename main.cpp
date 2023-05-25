@@ -53,6 +53,7 @@ int theFormat;
 int vaStat;
 int fskip;
 bool paused, noSignal;
+bool huff=false;
 int qp, br, gopSize, encSpeed;
 
 int discvar1, discvar2;
@@ -322,6 +323,42 @@ bool pSetVP9(string) {
     return false;
   } else {
     encName="vp9_vaapi";
+  }
+  return true;
+}
+
+bool pSetFFVHuff(string) {
+  if (meitner) {
+    encName="ffvhuff";
+    logD("setting ffvhuff as encoder.\n");
+    huff=true;
+  } else {
+    logE("only available in Meitner mode.\n");
+    return false;
+  }
+  return true;
+}
+
+bool pSetHuffYUV(string) {
+  if (meitner) {
+    encName="huffyuv";
+    logD("setting huffyuv as encoder.\n");
+    huff=true;
+  } else {
+    logE("only available in Meitner mode.\n");
+    return false;
+  }
+  return true;
+}
+
+bool pSetRawVideo(string) {
+  if (meitner) {
+    encName="rawvideo";
+    logD("setting rawvideo as encoder.\n");
+    huff=true;
+  } else {
+    logE("only available in Meitner mode.\n");
+    return false;
   }
   return true;
 }
@@ -781,6 +818,9 @@ void initParams() {
   params.push_back(Param("","mpeg2",false,pSetMPEG2,"","set video codec to MPEG-2"));
   params.push_back(Param("","vp8",false,pSetVP8,"","set video codec to VP8"));
   params.push_back(Param("","vp9",false,pSetVP9,"","set video codec to VP9"));
+  params.push_back(Param("","ffvhuff",false,pSetFFVHuff,"","set video codec to FFVHuff (Meitner only)"));
+  params.push_back(Param("","huffyuv",false,pSetHuffYUV,"","set video codec to HuffYUV (Meitner only)"));
+  params.push_back(Param("","rawvideo",false,pSetRawVideo,"","set video codec to raw (Meitner only)"));
   
   // codec options
   categories.push_back(Category("Codec options","quality"));
@@ -980,6 +1020,8 @@ int main(int argc, char** argv) {
       logD("skipping plane %d...\n",planeres->planes[i]);
       continue;
     }
+
+    logD("trying plane %d (%d) with fb_id %d...\n",plane->plane_id,i,plane->fb_id);
     
     if (plane->fb_id==0) {
       drmModeFreePlane(plane);
@@ -987,8 +1029,9 @@ int main(int argc, char** argv) {
       continue;
     }
     
-    logD("using plane %d.\n",plane->plane_id);
+    logD("using plane %d (%d in list) %d, %d.\n",plane->plane_id,i,plane->x,plane->y);
     planeid=plane->plane_id;
+
     break;
   }
   
@@ -1149,7 +1192,7 @@ int main(int argc, char** argv) {
   // open file
   logD("creating output context\n");
   unlink(outname);
-  avformat_alloc_output_context2(&out,NULL,NULL,outname);
+  avformat_alloc_output_context2(&out,NULL,"nut",outname);
   if (out==NULL) {
     logE("couldn't open output...\n");
     return 1;
@@ -1158,7 +1201,8 @@ int main(int argc, char** argv) {
   /// Video
   logD("creating encoder\n");
   // create stream
-  if (meitner && absolPerf) {
+  if (meitner && absolPerf && !huff) {
+    logD("setting libx264rgb as encoder.\n");
     encName="libx264rgb";
   }
   if ((encInfo=avcodec_find_encoder_by_name(encName.c_str()))==NULL) {
@@ -1178,6 +1222,7 @@ int main(int argc, char** argv) {
   encoder->width=ow;
   encoder->height=oh;
   encoder->time_base=tb;
+  //encoder->thread_count=4;
   if (framerate>0) {
     encoder->framerate=(AVRational){framerate,fskip};
   }
@@ -1235,6 +1280,11 @@ int main(int argc, char** argv) {
         av_dict_set(&encOpt,"profile","high444p",0);
       }
     }
+  }
+
+  if (encName=="huffyuv" || encName=="ffvhuff") {
+    //av_dict_set(&encOpt,"non_deterministic","1",0);
+    //av_dict_set(&encOpt,"context","1",0);
   }
 
   if (hesse) {
@@ -1460,9 +1510,9 @@ int main(int argc, char** argv) {
   if (qp==0) printf("\x1b[1;31m> !!! -> -> LOSSLESS <- <- !!! <\x1b[m\n");
   printf("\x1b[1m|\x1b[m\n");
   if (meitner) {
-    printf("\x1b[1m- screen %dx%d, output %dx%d, %s\x1b[m\n",dw,dh,ow,oh,"RGB 4:4:4");
+    printf("\x1b[1m- screen %dx%d, output %dx%d, %s, %s\x1b[m\n",dw,dh,ow,oh,"RGB 4:4:4",encName.c_str());
   } else {
-    printf("\x1b[1m- screen %dx%d, output %dx%d, YUV %s\x1b[m\n",dw,dh,ow,oh,absolPerf?("4:4:4"):("4:2:0"));
+    printf("\x1b[1m- screen %dx%d, output %dx%d, YUV %s, %s\x1b[m\n",dw,dh,ow,oh,absolPerf?("4:4:4"):("4:2:0"),encName.c_str());
   }
   if (audioType!=audioTypeNone) {
     printf("\x1b[1m- audio from %s, %dHz (%d channels)\n",ae->engineName(),ae->sampleRate(),ae->channels());
