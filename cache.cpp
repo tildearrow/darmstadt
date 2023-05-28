@@ -45,7 +45,7 @@ void* WriteCache::run() {
   return NULL;
 }
 
-int WriteCache::write(unsigned char* buf, size_t len) {
+int WriteCache::write(unsigned char* buf, ssize_t len) {
   unsigned char* nbuf;
   if (!running) {
     return ::write(o,buf,len);
@@ -118,7 +118,7 @@ void* wcRun(void* inst) {
   return ((WriteCache*)inst)->run();
 }
 
-bool WriteCache::enable(size_t ringSize) {
+bool WriteCache::enable(ssize_t ringSize) {
   if (ringBuf==NULL) {
     ringBufSize=ringSize;
     ringBuf=new unsigned char[ringBufSize];
@@ -146,8 +146,8 @@ bool WriteCache::disable() {
   return false;
 }
 
-size_t WriteCache::queueSize() {
-  size_t ret=0;
+ssize_t WriteCache::queueSize() {
+  ssize_t ret=0;
   m.lock();
   for (CacheCommand& i: cqueue) {
     if (i.cmd==cWrite) ret+=i.size;

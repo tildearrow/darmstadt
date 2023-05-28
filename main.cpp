@@ -9,7 +9,7 @@ drmModePlane* plane;
 drmModeFB* fb;
 drmModeCrtc* disp;
 drmVBlank vblank;
-int oldHandle=-1;
+unsigned int oldHandle=0;
 int repeatCount=0;
 
 unsigned int planeid;
@@ -1376,33 +1376,35 @@ int main(int argc, char** argv) {
     audEncoder=avcodec_alloc_context3(audEncInfo);
     audEncoder->sample_fmt=audEncInfo->sample_fmts?audEncInfo->sample_fmts[0]:AV_SAMPLE_FMT_FLTP;
     audEncoder->sample_rate=ae->sampleRate();
-    audEncoder->channels=ae->channels();
+    audEncoder->ch_layout.nb_channels=ae->channels();
+    audEncoder->ch_layout.order=AV_CHANNEL_ORDER_NATIVE;
     audEncoder->time_base=(AVRational){1,audEncoder->sample_rate};
     audStream->time_base=(AVRational){1,audEncoder->sample_rate};
-    switch (audEncoder->channels) {
+    switch (audEncoder->ch_layout.nb_channels) {
       case 1:
-        audEncoder->channel_layout=AV_CH_LAYOUT_MONO;
+      
+        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_MONO;
         break;
       case 2:
-        audEncoder->channel_layout=AV_CH_LAYOUT_STEREO;
+        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_STEREO;
         break;
       case 3:
-        audEncoder->channel_layout=AV_CH_LAYOUT_2POINT1;
+        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_2POINT1;
         break;
       case 4:
-        audEncoder->channel_layout=AV_CH_LAYOUT_QUAD;
+        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_QUAD;
         break;
       case 5:
-        audEncoder->channel_layout=AV_CH_LAYOUT_5POINT0;
+        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_5POINT0;
         break;
       case 6:
-        audEncoder->channel_layout=AV_CH_LAYOUT_5POINT1;
+        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_5POINT1;
         break;
       case 7:
-        audEncoder->channel_layout=AV_CH_LAYOUT_7POINT0;
+        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_7POINT0;
         break;
       case 8:
-        audEncoder->channel_layout=AV_CH_LAYOUT_7POINT1;
+        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_7POINT1;
         break;
     }
     
@@ -1448,7 +1450,7 @@ int main(int argc, char** argv) {
     audFrame->pts=1024;
     audFrame->pkt_dts=1024;
     audFrame->format=audEncoder->sample_fmt;
-    audFrame->channel_layout=audEncoder->channel_layout;
+    //audFrame->channel_layout=audEncoder->channel_layout;
     if (audEncInfo->capabilities&AV_CODEC_CAP_VARIABLE_FRAME_SIZE) {
       audFrame->nb_samples=1024;
     } else {

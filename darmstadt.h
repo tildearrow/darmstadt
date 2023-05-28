@@ -204,17 +204,17 @@ class WriteCache {
   std::deque<CacheCommand> cqueue;
   std::mutex m;
   unsigned char* ringBuf;
-  size_t ringBufSize;
+  ssize_t ringBufSize;
   ssize_t ringBufPosR, ringBufPosW;
   public:
     void* run();
 
-    int write(unsigned char* buf, size_t len);
+    int write(unsigned char* buf, ssize_t len);
     int seek(ssize_t pos, int whence);
-    size_t queueSize();
+    ssize_t queueSize();
     bool flush();
     void setFile(int f);
-    bool enable(size_t ringSize);
+    bool enable(ssize_t ringSize);
     bool disable();
     WriteCache();
 };
