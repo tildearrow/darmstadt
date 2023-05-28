@@ -1450,7 +1450,7 @@ int main(int argc, char** argv) {
     audFrame->pts=1024;
     audFrame->pkt_dts=1024;
     audFrame->format=audEncoder->sample_fmt;
-    //audFrame->channel_layout=audEncoder->channel_layout;
+    audFrame->ch_layout=audEncoder->ch_layout;
     if (audEncInfo->capabilities&AV_CODEC_CAP_VARIABLE_FRAME_SIZE) {
       audFrame->nb_samples=1024;
     } else {
