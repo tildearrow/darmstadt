@@ -1793,7 +1793,7 @@ int main(int argc, char** argv) {
       vaBD.pixel_format=VA_FOURCC_BGRX;
       vaBD.width=fb->width;
       vaBD.height=fb->height;
-      vaBD.data_size=fb->pitch*fb->height*4;
+      vaBD.data_size=fb->pitch*fb->height;
       vaBD.num_buffers=1;
       vaBD.flags=0;
       vaBD.pitches[0]=fb->pitch;
