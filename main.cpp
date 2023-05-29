@@ -1,4 +1,5 @@
 #include "darmstadt.h"
+#include <gbm.h>
 #include <va/va.h>
 #include <xf86drmMode.h>
 
@@ -13,6 +14,9 @@ drmModeCrtc* disp;
 drmVBlank vblank;
 unsigned int oldFBID=0;
 int repeatCount=0;
+
+gbm_device* gbmDevice;
+gbm_bo* compoBo;
 
 unsigned int planeid;
 
@@ -34,13 +38,15 @@ std::queue<qFrame> frames;
 
 VADisplay vaInst;
 VASurfaceAttribExternalBuffers vaBD;
+VASurfaceAttribExternalBuffers vaCompoBD;
 VAContextID scalerC;
 VAContextID copierC;
 VASurfaceID surface;
-VASurfaceID portFrame[16];
-VAConfigID vaConf;
+VASurfaceID portFrame;
+VAConfigID vaConfS, vaConfC;
 VABufferID scalerBuf;
 VABufferID copierBuf;
+VABlendState compoBS;
 VASurfaceAttrib vaAttr[2];
 VASurfaceAttrib coAttr[3];
 VAProcPipelineParameterBuffer scaler;
@@ -1008,6 +1014,13 @@ int main(int argc, char** argv) {
     logE("i have to tell you... that universal planes can't happen...\n");
     return 1;
   }
+
+  logD("creating GBM device...\n");
+  gbmDevice=gbm_create_device(fd);
+  if (gbmDevice==NULL) {
+    logE("couldn't open GBM device.\n");
+    return 1;
+  }
   
   planeres=drmModeGetPlaneResources(fd);
   if (planeres==NULL) {
@@ -1084,6 +1097,13 @@ int main(int argc, char** argv) {
     }
   }
 
+  logD("creating GBM surface.\n");
+  compoBo=gbm_bo_create(gbmDevice,ow,oh,GBM_FORMAT_ARGB8888,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
+  if (compoBo==NULL) {
+    logE("couldn't make GBM surface.\n");
+    return 1;
+  }
+
   if (encName=="") {
     // 2880x1800 = 5.1 megapixels
     if (ow*oh>=5184000) {
@@ -1151,41 +1171,30 @@ int main(int argc, char** argv) {
     return 1;
   }
   
-  coAttr[0].type=VASurfaceAttribMemoryType;
-  coAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
-  coAttr[0].value.type=VAGenericValueTypeInteger;
-  coAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_VA;
-  coAttr[1].type=VASurfaceAttribUsageHint;
-  coAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
-  coAttr[1].value.type=VAGenericValueTypeInteger;
-  coAttr[1].value.value.i=VA_SURFACE_ATTRIB_USAGE_HINT_VPP_READ|VA_SURFACE_ATTRIB_USAGE_HINT_VPP_WRITE;
-  /*
-  coAttr[2].type=VASurfaceAttribPixelFormat;
-  coAttr[2].flags=VA_SURFACE_ATTRIB_SETTABLE;
-  coAttr[2].value.type=VAGenericValueTypeInteger;
-  coAttr[2].value.value.i=0x30524742;*/
-  
-  logD("creating VA surface...\n");
-  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,portFrame,1,coAttr,2))!=VA_STATUS_SUCCESS) {
-    logE("could not create surface for encoding... %x\n",vaStat);
-    return 1;
-  }
-
-  if ((vaStat=vaSyncSurface(vaInst,portFrame[0]))!=VA_STATUS_SUCCESS) {
-    logE("no surface sync %x\n",vaStat);
-  }
-  
   logD("creating VA config\n");
-  if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConf)!=VA_STATUS_SUCCESS) {
+  /*
+  if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConfC)!=VA_STATUS_SUCCESS) {
+    logE("no videoproc.\n");
+    return 1;
+  }*/
+  if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConfS)!=VA_STATUS_SUCCESS) {
     logE("no videoproc.\n");
     return 1;
   }
 
+  /*
+  logD("creating compositor context\n");
+  if (vaCreateContext(vaInst,vaConfC,ow,oh,VA_PROGRESSIVE,NULL,0,&copierC)!=VA_STATUS_SUCCESS) {
+    logE("we can't compose...\n");
+    return 1;
+  }*/
+
   logD("creating VA format converter context\n");
-  if (vaCreateContext(vaInst,vaConf,ow,oh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
+  if (vaCreateContext(vaInst,vaConfS,ow,oh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
     logE("we can't scale...\n");
     return 1;
   }
+
   logD("allocating context for FFmpeg\n");
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
 
@@ -1698,6 +1707,41 @@ int main(int argc, char** argv) {
     // RETRIEVE CODE BEGIN //
     tStart=curTime(CLOCK_MONOTONIC);
 
+    intptr_t boFD=gbm_bo_get_fd(compoBo);
+    if (boFD<0) {
+      logE("could not fuck the BO\n");
+      return 1;
+    }
+
+    vaCompoBD.buffers=(uintptr_t*)&boFD;
+    vaCompoBD.pixel_format=VA_FOURCC_BGRX;
+    vaCompoBD.width=ow;
+    vaCompoBD.height=oh;
+    vaCompoBD.data_size=ow*oh*4;
+    vaCompoBD.num_buffers=1;
+    vaCompoBD.flags=VA_SURFACE_EXTBUF_DESC_PROTECTED;
+    vaCompoBD.pitches[0]=ow*4;
+    vaCompoBD.offsets[0]=0;
+    vaCompoBD.num_planes=1;
+    
+    coAttr[0].type=VASurfaceAttribMemoryType;
+    coAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
+    coAttr[0].value.type=VAGenericValueTypeInteger;
+    coAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    coAttr[1].type=VASurfaceAttribExternalBufferDescriptor;
+    coAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
+    coAttr[1].value.type=VAGenericValueTypePointer;
+    coAttr[1].value.value.p=&vaCompoBD;
+
+    if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&portFrame,1,coAttr,3))!=VA_STATUS_SUCCESS) {
+      logE("could not create surface for compositing... %x\n",vaStat);
+      return 1;
+    }
+
+    if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
+      logE("no surface sync %x\n",vaStat);
+    }
+
     planeres=drmModeGetPlaneResources(fd);
     if (planeres==NULL) {
       logE("\x1b[2K\x1b[1;31m%d: plane resources unavailable!\x1b[m\n");
@@ -1749,7 +1793,7 @@ int main(int argc, char** argv) {
       vaBD.pixel_format=VA_FOURCC_BGRX;
       vaBD.width=fb->width;
       vaBD.height=fb->height;
-      vaBD.data_size=fb->pitch*fb->height;
+      vaBD.data_size=fb->pitch*fb->height*4;
       vaBD.num_buffers=1;
       vaBD.flags=0;
       vaBD.pitches[0]=fb->pitch;
@@ -1776,27 +1820,38 @@ int main(int argc, char** argv) {
         scaleRegion.y=plane->y;
         scaleRegion.width=fb->width;
         scaleRegion.height=fb->height;
+
+        cropRegion.x=0;
+        cropRegion.y=0;
+        cropRegion.width=fb->width;
+        cropRegion.height=fb->height;
+
+        compoBS.flags=0;
+        compoBS.global_alpha=0.0f;
+        compoBS.max_luma=1.0f;
+        compoBS.min_luma=0.0f;
       
-        scaler.surface=surface;
-        scaler.surface_region=NULL;
-        scaler.surface_color_standard=VAProcColorStandardBT709;
-        scaler.output_region=&scaleRegion;
-        scaler.output_background_color=0;
-        scaler.output_color_standard=VAProcColorStandardBT709;
-        scaler.pipeline_flags=0;
-        scaler.blend_state=NULL;
-        scaler.filter_flags=VA_FILTER_SCALING_FAST;
+        memset(&copier,0,sizeof(copier));
+        copier.surface=surface;
+        copier.surface_region=&cropRegion;
+        copier.surface_color_standard=VAProcColorStandardBT709;
+        copier.output_region=&scaleRegion;
+        copier.output_background_color=0;
+        copier.output_color_standard=VAProcColorStandardBT709;
+        copier.pipeline_flags=0;
+        copier.blend_state=&compoBS;
+        copier.filter_flags=VA_FILTER_SCALING_FAST;
 
         // VA-API MULTI-PLANE CODE BEGIN //    
-        if ((vaStat=vaBeginPicture(vaInst,scalerC,portFrame[0]))!=VA_STATUS_SUCCESS) {
+        if ((vaStat=vaBeginPicture(vaInst,scalerC,portFrame))!=VA_STATUS_SUCCESS) {
           printf("vaBeginPicture fail: %x\n",vaStat);
           return 1;
         }
-        if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
+        if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(copier),1,&copier,&copierBuf))!=VA_STATUS_SUCCESS) {
           printf("param buffer creation fail: %x\n",vaStat);
           return 1;
         }
-        if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
+        if ((vaStat=vaRenderPicture(vaInst,scalerC,&copierBuf,1))!=VA_STATUS_SUCCESS) {
           printf("vaRenderPicture fail: %x\n",vaStat);
           return 1;
         }
@@ -1804,12 +1859,12 @@ int main(int argc, char** argv) {
           printf("vaEndPicture fail: %x\n",vaStat);
           return 1;
         }
-        if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
+        if ((vaStat=vaDestroyBuffer(vaInst,copierBuf))!=VA_STATUS_SUCCESS) {
           printf("vaDestroyBuffer fail: %x\n",vaStat);
           return 1;
         }
 
-        if ((vaStat=vaSyncSurface(vaInst,portFrame[0]))!=VA_STATUS_SUCCESS) {
+        if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
           printf("no post surface sync %x\n",vaStat);
         }
 
@@ -1833,17 +1888,13 @@ int main(int argc, char** argv) {
     dsScanOff[dsScanOffPos++]=(wtEnd-wtStart).tv_nsec;
     dsScanOffPos&=1023;
     //makeGraph(0,2,40,12,true,dsScanOff,1024,dsScanOffPos-40);
-    
-    if ((vaStat=vaSyncSurface(vaInst,portFrame[0]))!=VA_STATUS_SUCCESS) {
-      printf("no surface sync %x\n",vaStat);
-    }
 
     scaleRegion.x=0;
     scaleRegion.y=0;
     scaleRegion.width=ow;
     scaleRegion.height=oh;
 
-    scaler.surface=portFrame[0];
+    scaler.surface=portFrame;
     scaler.surface_region=NULL;
     scaler.surface_color_standard=VAProcColorStandardBT709;
     scaler.output_region=&scaleRegion;
@@ -1858,7 +1909,7 @@ int main(int argc, char** argv) {
       hardFrame->pkt_dts=hardFrame->pts;
 
       // how come this fails? we need to rescale!
-      if ((vaStat=vaGetImage(vaInst,portFrame[0],0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+      if ((vaStat=vaGetImage(vaInst,portFrame,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
         logW("couldn't get image! %x\n",vaStat);
       }
       if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
@@ -1904,11 +1955,15 @@ int main(int argc, char** argv) {
       // VA-API ENCODE SINGLE-THREAD CODE END //
     }
     //av_frame_free(&hardFrame);
-  
 
-    if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
-      printf("destroy surf error %x\n",vaStat);
+    if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
+      printf("no surface sync %x\n",vaStat);
     }
+    if ((vaStat=vaDestroySurfaces(vaInst,&portFrame,1))!=VA_STATUS_SUCCESS) {
+      logE("destroy portframes error %x\n",vaStat);
+      return 1;
+    }
+    close(boFD);
     // RETRIEVE CODE END //
     
     // AUDIO CODE BEGIN //
@@ -2048,10 +2103,7 @@ int main(int argc, char** argv) {
 
   avcodec_free_context(&encoder);
   vaDestroyContext(vaInst,scalerC);
-  vaDestroyContext(vaInst,copierC);
-  if ((vaStat=vaDestroySurfaces(vaInst,portFrame,1))!=VA_STATUS_SUCCESS) {
-    logE("destroy portframes error %x\n",vaStat);
-  }
+  //vaDestroyContext(vaInst,copierC);
   vaTerminate(vaInst);
 
   close(fd);
