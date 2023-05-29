@@ -1,10 +1,12 @@
 #include "darmstadt.h"
+#include <EGL/egl.h>
 #include <gbm.h>
 #include <va/va.h>
 #include <xf86drmMode.h>
 
 bool quit, newSize;
 
+// HARDWARE //
 int fd, primefd, renderfd;
 
 drmModePlaneRes* planeres;
@@ -16,10 +18,8 @@ unsigned int oldFBID=0;
 int repeatCount=0;
 
 gbm_device* gbmDevice;
-gbm_bo* compoBo;
 
-unsigned int planeid;
-
+// STATS //
 int frame;
 int framerate;
 struct timespec btime, vtime, dtime, lastATime, sATime;
@@ -28,31 +28,22 @@ int videoStalls=0;
 
 struct timespec wtStart, wtEnd;
 
+// CONFIG //
 int dw, dh, ow, oh;
 int cx, cy, cw, ch;
 bool doCrop;
 ScaleMethod sm;
 
-pthread_t thr;
-std::queue<qFrame> frames;
-
+// VA-API //
 VADisplay vaInst;
 VASurfaceAttribExternalBuffers vaBD;
-VASurfaceAttribExternalBuffers vaCompoBD;
 VAContextID scalerC;
-VAContextID copierC;
 VASurfaceID surface;
-VASurfaceID portFrame;
-VAConfigID vaConfS, vaConfC;
+VAConfigID vaConfS;
 VABufferID scalerBuf;
-VABufferID copierBuf;
-VABlendState compoBS;
 VASurfaceAttrib vaAttr[2];
-VASurfaceAttrib coAttr[3];
 VAProcPipelineParameterBuffer scaler;
 VARectangle scaleRegion, cropRegion;
-VAProcPipelineParameterBuffer copier;
-VARectangle copyRegion;
 VAImage img;
 VAImageFormat imgFormat;
 VAImageFormat allowedFormats[2048];
@@ -69,6 +60,23 @@ int discvar1, discvar2;
 unsigned char* addr;
 unsigned long portedFD;
 struct timespec tStart, tEnd;
+
+// COMPOSITOR - VA //
+VASurfaceAttribExternalBuffers vaCompoBD;
+VAContextID copierC;
+VABufferID copierBuf;
+VASurfaceID portFrame;
+VABlendState compoBS;
+VASurfaceAttrib coAttr[3];
+VAProcPipelineParameterBuffer copier;
+VARectangle copyRegion;
+
+// COMPOSITOR - EGL //
+EGLDisplay eglInst;
+EGLConfig eglConf;
+EGLSurface eglOut;
+gbm_surface* gbmOut;
+gbm_bo* compoBo;
 
 // VIDEO //
 AVStream* stream;
@@ -92,6 +100,7 @@ AVDictionary* audEncOpt;
 AVPacket* audPacket;
 string audName;
 
+// OUTPUT //
 AVFormatContext* out;
 
 #define DARM_AVIO_BUFSIZE 131072
@@ -110,6 +119,7 @@ const char* outname="out.nut";
 
 SyncMethod syncMethod;
 
+// AUDIO SETTINGS //
 AudioType audioType;
 AudioEngine* ae;
 float audGain, audLimAmt;
@@ -117,7 +127,6 @@ bool audLimiter;
 
 struct winsize winSize;
 
-//std::vector<Device> devices;
 drmDevice* devices[128];
 int deviceCount;
 std::vector<Param> params;
@@ -156,21 +165,7 @@ int64_t seekCache(void*, int64_t off, int whence) {
   return 0;
 }
 
-void* unbuff(void*) {
-  qFrame f;
-  
-  while (1) {
-    while (!frames.empty()) {
-      f=frames.back();
-      frames.pop();
-      printf("popped frame. there are now %lu frames\n",frames.size());
-    }
-    usleep(1000);
-  }
-  return NULL;
-}
-
-static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout, AVStream* str)
+static int writeFrame(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout, AVStream* str)
 {
     int ret = 0;
     AVPacket* enc_pkt=av_packet_alloc();
@@ -207,6 +202,203 @@ end:
     av_packet_free(&enc_pkt);
     ret = ((ret == AVERROR(EAGAIN)) ? 0 : -1);
     return ret;
+}
+
+bool composeFrameVA() {
+  planeres=drmModeGetPlaneResources(fd);
+  if (planeres==NULL) {
+    logE("\x1b[2K\x1b[1;31m%d: plane resources unavailable!\x1b[m\n");
+    return false;
+  }
+
+  for (unsigned int i=0; i<planeres->count_planes; i++) {
+    plane=drmModeGetPlane(fd,planeres->planes[i]);
+    if (plane==NULL) {
+      //logD("skipping plane %d...\n",planeres->planes[i]);
+      continue;
+    }
+
+    if (plane->fb_id==0) {
+      //printf("\x1b[2K\x1b[1;31m%d: the plane doesn't have a framebuffer!\x1b[m\n",frame);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    printf("\x1b[2K\x1b[1;32m%d: composing FB %d...\x1b[m\n",frame,plane->fb_id);
+    
+    fb=drmModeGetFB(fd,plane->fb_id);
+    if (fb==NULL) {
+      printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+    if (!fb->handle) {
+      printf("\x1b[2K\x1b[1;31m%d: the framebuffer has invalid handle!\x1b[m\n",frame);
+      drmModeFreeFB(fb);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
+      printf("\x1b[2K\x1b[1;31m%d: unable to prepare framebuffer for the compositor!\x1b[m\n",frame);
+      drmModeFreeFB(fb);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    // blit
+    portedFD=primefd;
+    vaBD.buffers=&portedFD;
+    vaBD.pixel_format=VA_FOURCC_BGRX;
+    vaBD.width=fb->width;
+    vaBD.height=fb->height;
+    vaBD.data_size=fb->pitch*fb->height;
+    vaBD.num_buffers=1;
+    vaBD.flags=0;
+    vaBD.pitches[0]=fb->pitch;
+    vaBD.offsets[0]=0;
+    vaBD.num_planes=1;
+    
+    vaAttr[0].type=VASurfaceAttribMemoryType;
+    vaAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
+    vaAttr[0].value.type=VAGenericValueTypeInteger;
+    vaAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    vaAttr[1].type=VASurfaceAttribExternalBufferDescriptor;
+    vaAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
+    vaAttr[1].value.type=VAGenericValueTypePointer;
+    vaAttr[1].value.value.p=&vaBD;
+
+    if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,fb->width,fb->height,&surface,1,vaAttr,2))!=VA_STATUS_SUCCESS) {
+      printf("could not create surface... %x\n",vaStat);
+    } else {
+      if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
+        printf("no surface sync %x\n",vaStat);
+      }
+
+      scaleRegion.x=plane->x;
+      scaleRegion.y=plane->y;
+      scaleRegion.width=fb->width;
+      scaleRegion.height=fb->height;
+
+      cropRegion.x=0;
+      cropRegion.y=0;
+      cropRegion.width=fb->width;
+      cropRegion.height=fb->height;
+
+      compoBS.flags=0;
+      compoBS.global_alpha=0.0f;
+      compoBS.max_luma=1.0f;
+      compoBS.min_luma=0.0f;
+    
+      memset(&copier,0,sizeof(copier));
+      copier.surface=surface;
+      copier.surface_region=&cropRegion;
+      copier.surface_color_standard=VAProcColorStandardBT709;
+      copier.output_region=&scaleRegion;
+      copier.output_background_color=0;
+      copier.output_color_standard=VAProcColorStandardBT709;
+      copier.pipeline_flags=0;
+      copier.blend_state=&compoBS;
+      copier.filter_flags=VA_FILTER_SCALING_FAST;
+
+      // VA-API MULTI-PLANE CODE BEGIN //    
+      if ((vaStat=vaBeginPicture(vaInst,scalerC,portFrame))!=VA_STATUS_SUCCESS) {
+        printf("vaBeginPicture fail: %x\n",vaStat);
+        return false;
+      }
+      if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(copier),1,&copier,&copierBuf))!=VA_STATUS_SUCCESS) {
+        printf("param buffer creation fail: %x\n",vaStat);
+        return false;
+      }
+      if ((vaStat=vaRenderPicture(vaInst,scalerC,&copierBuf,1))!=VA_STATUS_SUCCESS) {
+        printf("vaRenderPicture fail: %x\n",vaStat);
+        return false;
+      }
+      if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
+        printf("vaEndPicture fail: %x\n",vaStat);
+        return false;
+      }
+      if ((vaStat=vaDestroyBuffer(vaInst,copierBuf))!=VA_STATUS_SUCCESS) {
+        printf("vaDestroyBuffer fail: %x\n",vaStat);
+        return false;
+      }
+
+      if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
+        printf("no post surface sync %x\n",vaStat);
+      }
+
+      if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
+        printf("destroy surf error %x\n",vaStat);
+      }
+
+      printf("blit finished.\n");
+      // VA-API MULTI-PLANE CODE END //
+    }
+
+    close(primefd);
+    drmModeFreeFB(fb);
+    drmModeFreePlane(plane);
+    plane=NULL;
+  }
+  drmModeFreePlaneResources(planeres);
+
+  return true;
+}
+
+bool composeFrameEGL() {
+  
+  return false;
+}
+
+bool initEGL() {
+  // check availability of GBM platform
+#ifdef EGL_MESA_platform_gbm
+  const char* extensions=eglQueryString(EGL_NO_DISPLAY,EGL_EXTENSIONS);
+
+  if (extensions==NULL) {
+    logE("no extensions available!\n");
+    return false;
+  }
+
+  if (strstr(extensions,"EGL_MESA_platform_gbm")==NULL) {
+    logE("your setup does not support EGL_MESA_platform_gbm.\n");
+    return false;
+  }
+#endif
+
+  // open device
+#ifdef EGL_MESA_platform_gbm
+  eglInst=eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_MESA,gbmDevice,NULL);
+#else
+  eglInst=eglGetDisplay(gbmDevice);
+#endif
+
+  if (eglInst==EGL_NO_DISPLAY) {
+    logE("no display...\n");
+    return false;
+  }
+
+  EGLint eglVerMajor, eglVerMinor;
+  if (!eglInitialize(eglInst,&eglVerMajor,&eglVerMinor)) {
+    logE("EGL init failed...\n");
+    return false;
+  }
+  logD("EGL version %d.%d.\n",eglVerMajor,eglVerMinor);
+
+
+
+  // init output
+  compoBo=gbm_bo_create(gbmDevice,ow,oh,GBM_FORMAT_ARGB8888,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
+  if (compoBo==NULL) {
+    logE("couldn't make GBM surface.\n");
+    return false;
+  }
+
+  return false;
 }
 
 bool needsValue(string param) {
@@ -1045,8 +1237,6 @@ int main(int argc, char** argv) {
     }
     
     logD("using plane %d (%d in list) %d, %d.\n",plane->plane_id,i,plane->x,plane->y);
-    planeid=plane->plane_id;
-
     break;
   }
   
@@ -1097,12 +1287,8 @@ int main(int argc, char** argv) {
     }
   }
 
-  logD("creating GBM surface.\n");
-  compoBo=gbm_bo_create(gbmDevice,ow,oh,GBM_FORMAT_ARGB8888,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
-  if (compoBo==NULL) {
-    logE("couldn't make GBM surface.\n");
-    return 1;
-  }
+  logD("initializing EGL.\n");
+  if (!initEGL()) return 1;
 
   if (encName=="") {
     // 2880x1800 = 5.1 megapixels
@@ -1172,22 +1358,10 @@ int main(int argc, char** argv) {
   }
   
   logD("creating VA config\n");
-  /*
-  if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConfC)!=VA_STATUS_SUCCESS) {
-    logE("no videoproc.\n");
-    return 1;
-  }*/
   if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConfS)!=VA_STATUS_SUCCESS) {
     logE("no videoproc.\n");
     return 1;
   }
-
-  /*
-  logD("creating compositor context\n");
-  if (vaCreateContext(vaInst,vaConfC,ow,oh,VA_PROGRESSIVE,NULL,0,&copierC)!=VA_STATUS_SUCCESS) {
-    logE("we can't compose...\n");
-    return 1;
-  }*/
 
   logD("creating VA format converter context\n");
   if (vaCreateContext(vaInst,vaConfS,ow,oh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
@@ -1382,16 +1556,18 @@ int main(int argc, char** argv) {
   
   /// Audio
   switch (audioType) {
+#ifdef HAVE_JACK
     case audioTypeJACK:
       ae=new JACKAudioEngine;
       break;
+#endif
     case audioTypePulse:
       ae=new PulseAudioEngine;
       break;
     case audioTypeNone:
       break;
     default:
-      logE("this audio type is not implemented yet!\n");
+      logE("this audio type is not available!\n");
       return 1;
       break;
   }
@@ -1710,7 +1886,7 @@ int main(int argc, char** argv) {
     intptr_t boFD=gbm_bo_get_fd(compoBo);
     if (boFD<0) {
       logE("could not fuck the BO\n");
-      return 1;
+      return false;
     }
 
     vaCompoBD.buffers=(uintptr_t*)&boFD;
@@ -1735,153 +1911,17 @@ int main(int argc, char** argv) {
 
     if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&portFrame,1,coAttr,3))!=VA_STATUS_SUCCESS) {
       logE("could not create surface for compositing... %x\n",vaStat);
-      return 1;
+      return false;
     }
 
     if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
       logE("no surface sync %x\n",vaStat);
     }
 
-    planeres=drmModeGetPlaneResources(fd);
-    if (planeres==NULL) {
-      logE("\x1b[2K\x1b[1;31m%d: plane resources unavailable!\x1b[m\n");
-      break;
+    if (!composeFrameVA()) {
+      logE("couldn't compose frame.\n");
+      return 1;
     }
-
-    for (unsigned int i=0; i<planeres->count_planes; i++) {
-      plane=drmModeGetPlane(fd,planeres->planes[i]);
-      if (plane==NULL) {
-        //logD("skipping plane %d...\n",planeres->planes[i]);
-        continue;
-      }
-
-      if (plane->fb_id==0) {
-        //printf("\x1b[2K\x1b[1;31m%d: the plane doesn't have a framebuffer!\x1b[m\n",frame);
-        drmModeFreePlane(plane);
-        plane=NULL;
-        continue;
-      }
-
-      printf("\x1b[2K\x1b[1;32m%d: composing FB %d...\x1b[m\n",frame,plane->fb_id);
-      
-      fb=drmModeGetFB(fd,plane->fb_id);
-      if (fb==NULL) {
-        printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
-        drmModeFreePlane(plane);
-        plane=NULL;
-        continue;
-      }
-      if (!fb->handle) {
-        printf("\x1b[2K\x1b[1;31m%d: the framebuffer has invalid handle!\x1b[m\n",frame);
-        drmModeFreeFB(fb);
-        drmModeFreePlane(plane);
-        plane=NULL;
-        continue;
-      }
-
-      if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
-        printf("\x1b[2K\x1b[1;31m%d: unable to prepare framebuffer for the compositor!\x1b[m\n",frame);
-        drmModeFreeFB(fb);
-        drmModeFreePlane(plane);
-        plane=NULL;
-        continue;
-      }
-
-      // blit
-      portedFD=primefd;
-      vaBD.buffers=&portedFD;
-      vaBD.pixel_format=VA_FOURCC_BGRX;
-      vaBD.width=fb->width;
-      vaBD.height=fb->height;
-      vaBD.data_size=fb->pitch*fb->height;
-      vaBD.num_buffers=1;
-      vaBD.flags=0;
-      vaBD.pitches[0]=fb->pitch;
-      vaBD.offsets[0]=0;
-      vaBD.num_planes=1;
-      
-      vaAttr[0].type=VASurfaceAttribMemoryType;
-      vaAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
-      vaAttr[0].value.type=VAGenericValueTypeInteger;
-      vaAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
-      vaAttr[1].type=VASurfaceAttribExternalBufferDescriptor;
-      vaAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
-      vaAttr[1].value.type=VAGenericValueTypePointer;
-      vaAttr[1].value.value.p=&vaBD;
-
-      if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,fb->width,fb->height,&surface,1,vaAttr,2))!=VA_STATUS_SUCCESS) {
-        printf("could not create surface... %x\n",vaStat);
-      } else {
-        if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
-          printf("no surface sync %x\n",vaStat);
-        }
-
-        scaleRegion.x=plane->x;
-        scaleRegion.y=plane->y;
-        scaleRegion.width=fb->width;
-        scaleRegion.height=fb->height;
-
-        cropRegion.x=0;
-        cropRegion.y=0;
-        cropRegion.width=fb->width;
-        cropRegion.height=fb->height;
-
-        compoBS.flags=0;
-        compoBS.global_alpha=0.0f;
-        compoBS.max_luma=1.0f;
-        compoBS.min_luma=0.0f;
-      
-        memset(&copier,0,sizeof(copier));
-        copier.surface=surface;
-        copier.surface_region=&cropRegion;
-        copier.surface_color_standard=VAProcColorStandardBT709;
-        copier.output_region=&scaleRegion;
-        copier.output_background_color=0;
-        copier.output_color_standard=VAProcColorStandardBT709;
-        copier.pipeline_flags=0;
-        copier.blend_state=&compoBS;
-        copier.filter_flags=VA_FILTER_SCALING_FAST;
-
-        // VA-API MULTI-PLANE CODE BEGIN //    
-        if ((vaStat=vaBeginPicture(vaInst,scalerC,portFrame))!=VA_STATUS_SUCCESS) {
-          printf("vaBeginPicture fail: %x\n",vaStat);
-          return 1;
-        }
-        if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(copier),1,&copier,&copierBuf))!=VA_STATUS_SUCCESS) {
-          printf("param buffer creation fail: %x\n",vaStat);
-          return 1;
-        }
-        if ((vaStat=vaRenderPicture(vaInst,scalerC,&copierBuf,1))!=VA_STATUS_SUCCESS) {
-          printf("vaRenderPicture fail: %x\n",vaStat);
-          return 1;
-        }
-        if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
-          printf("vaEndPicture fail: %x\n",vaStat);
-          return 1;
-        }
-        if ((vaStat=vaDestroyBuffer(vaInst,copierBuf))!=VA_STATUS_SUCCESS) {
-          printf("vaDestroyBuffer fail: %x\n",vaStat);
-          return 1;
-        }
-
-        if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
-          printf("no post surface sync %x\n",vaStat);
-        }
-
-        if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
-          printf("destroy surf error %x\n",vaStat);
-        }
-
-        printf("blit finished.\n");
-        // VA-API MULTI-PLANE CODE END //
-      }
-
-      close(primefd);
-      drmModeFreeFB(fb);
-      drmModeFreePlane(plane);
-      plane=NULL;
-    }
-    drmModeFreePlaneResources(planeres);
 
     printf("\x1b[2K\x1b[1;32m%d: preparing frame...\x1b[m\n",frame);
     
@@ -1916,7 +1956,7 @@ int main(int argc, char** argv) {
         logW("oh come on! %x\n",vaStat);
       }
       hardFrame->data[0]=addr;
-      encode_write(encoder,hardFrame,out,stream);
+      writeFrame(encoder,hardFrame,out,stream);
       if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
         logE("could not unmap buffer: %x...\n",vaStat);
       }
@@ -1951,7 +1991,7 @@ int main(int argc, char** argv) {
         return 1;
       }
       
-      encode_write(encoder,hardFrame,out,stream);
+      writeFrame(encoder,hardFrame,out,stream);
       // VA-API ENCODE SINGLE-THREAD CODE END //
     }
     //av_frame_free(&hardFrame);
@@ -2071,12 +2111,7 @@ int main(int argc, char** argv) {
     }
     // AUDIO CODE END //
     
-    // HACK: force flush
-    //av_write_frame(out,NULL);
-    
-    //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
     tEnd=curTime(CLOCK_MONOTONIC);
-    //printf("%s\n",tstos(tEnd-tStart).c_str());
 
     if (!noSignal) {
       frame++;
