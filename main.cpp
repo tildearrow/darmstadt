@@ -1,8 +1,18 @@
 #include "darmstadt.h"
-#include <EGL/egl.h>
-#include <gbm.h>
+#include "eglcommon.h"
+#include <GLES2/gl2.h>
 #include <va/va.h>
 #include <xf86drmMode.h>
+
+PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
+PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
+PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
+PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
+PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR;
+PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR;
+PFNEGLWAITSYNCKHRPROC eglWaitSyncKHR;
+PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR;
+PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID;
 
 bool quit, newSize;
 
@@ -74,9 +84,14 @@ VARectangle copyRegion;
 // COMPOSITOR - EGL //
 EGLDisplay eglInst;
 EGLConfig eglConf;
-EGLSurface eglOut;
-gbm_surface* gbmOut;
+EGLContext eglContext;
+EGLImageKHR eglOut;
+GLuint compoTex;
+GLuint compoFB;
 gbm_bo* compoBo;
+const char* eglExtsBase=NULL;
+const char* eglExtsInst=NULL;
+const char* glExts=NULL;
 
 // VIDEO //
 AVStream* stream;
@@ -349,28 +364,78 @@ bool composeFrameVA() {
   return true;
 }
 
-bool composeFrameEGL() {
-  
-  return false;
+void* initGLProc(const char* extList, const char* extName, const char* procName) {
+  size_t len=strlen(extName);
+  const char* name=extList;
+
+  if (name==NULL) {
+    logW("extension list is null\n");
+    return NULL;
+  }
+  if (name[0]==0) {
+    logW("extension list is empty\n");
+    return NULL;
+  }
+
+  // find extension
+  while (true) {
+    name=strstr(name,extName);
+    if (name==NULL) {
+      logW("extension %s not found.\n",extName);
+      return NULL;
+    }
+    if (name[len]==0 || name[len]==' ') break;
+    name+=len;
+  }
+
+  // get proc address
+  return (void*)eglGetProcAddress(procName);
 }
 
-bool initEGL() {
-  // check availability of GBM platform
-#ifdef EGL_MESA_platform_gbm
-  const char* extensions=eglQueryString(EGL_NO_DISPLAY,EGL_EXTENSIONS);
+#define INIT_GL_PROC(_e,_n,_p) { \
+  void* temp=initGLProc(_e,_n,#_p); \
+  memcpy(&_p,&temp,sizeof(void*)); \
+}
 
-  if (extensions==NULL) {
+#define REQUIRE_GL_PROC(_e,_n,_p) \
+  INIT_GL_PROC(_e,_n,_p); \
+  if (_p==NULL)
+
+#define REQUIRE_GL_PROC_DEFAULT(_e,_n,_p) \
+  REQUIRE_GL_PROC(_e,_n,_p) { \
+    logE("procedure " #_p " of extension " _n " not found.\n"); \
+    return false; \
+  }
+
+bool initEGL() {
+  // init output buffer
+  unsigned int boFormat=GBM_FORMAT_ARGB8888;
+
+  logD("creating GBM buffer...\n");
+  compoBo=gbm_bo_create(gbmDevice,ow,oh,boFormat,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
+  if (compoBo==NULL) {
+    logE("couldn't make GBM buffer.\n");
+    return false;
+  }
+
+  // check availability of GBM platform
+  logD("query base extensions...\n");
+  eglExtsBase=eglQueryString(EGL_NO_DISPLAY,EGL_EXTENSIONS);
+#ifdef EGL_MESA_platform_gbm
+  if (eglExtsBase==NULL) {
     logE("no extensions available!\n");
     return false;
   }
 
-  if (strstr(extensions,"EGL_MESA_platform_gbm")==NULL) {
+  logD("init GL proc\n");
+  REQUIRE_GL_PROC(eglExtsBase,"EGL_EXT_platform_base",eglGetPlatformDisplayEXT) {
     logE("your setup does not support EGL_MESA_platform_gbm.\n");
     return false;
   }
 #endif
 
   // open device
+  logD("open EGL device...\n");
 #ifdef EGL_MESA_platform_gbm
   eglInst=eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_MESA,gbmDevice,NULL);
 #else
@@ -382,6 +447,7 @@ bool initEGL() {
     return false;
   }
 
+  logD("initialize EGL...\n");
   EGLint eglVerMajor, eglVerMinor;
   if (!eglInitialize(eglInst,&eglVerMajor,&eglVerMinor)) {
     logE("EGL init failed...\n");
@@ -389,16 +455,182 @@ bool initEGL() {
   }
   logD("EGL version %d.%d.\n",eglVerMajor,eglVerMinor);
 
+  eglExtsInst=eglQueryString(eglInst,EGL_EXTENSIONS);
 
+  // prepare EGL extensions
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_image_base",eglCreateImageKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_image_base",eglDestroyImageKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_fence_sync",eglCreateSyncKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_fence_sync",eglDestroySyncKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_fence_sync",eglWaitSyncKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_fence_sync",eglClientWaitSyncKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_ANDROID_native_fence_sync",eglDupNativeFenceFDANDROID);
 
-  // init output
-  compoBo=gbm_bo_create(gbmDevice,ow,oh,GBM_FORMAT_ARGB8888,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
-  if (compoBo==NULL) {
-    logE("couldn't make GBM surface.\n");
+  // prepare OpenGL
+  logD("bind API...\n");
+  if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+    logE("could not bind OpenGL ES!\n");
     return false;
   }
 
-  return false;
+  static const EGLint contextAttr[]={
+    EGL_CONTEXT_CLIENT_VERSION, 2,
+    EGL_NONE
+  };
+
+  const EGLint configAttr[]={
+    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+    EGL_RED_SIZE, 1,
+    EGL_GREEN_SIZE, 1,
+    EGL_BLUE_SIZE, 1,
+    EGL_ALPHA_SIZE, 1,
+    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+    EGL_SAMPLES, 1,
+    EGL_NONE
+  };
+
+  EGLint count=0;
+  EGLint matched=0;
+  EGLConfig *configs;
+  int configIndex=-1;
+
+  logD("choose config...\n");
+  if (!eglGetConfigs(eglInst,NULL,0,&count)) {
+    logE("no EGL configs available!\n");
+    return false;
+  }
+  if (count<1) {
+    logE("no EGL configs available!\n");
+    return false;
+  }
+  configs=new EGLConfig[count];
+
+  if (!eglChooseConfig(eglInst,configAttr,configs,count,&matched)) {
+    logE("no EGL configs with needed attributes!\n");
+    delete[] configs;
+    return false;
+  }
+  if (!matched) {
+    logE("no EGL configs with needed attributes!\n");
+    delete[] configs;
+    return false;
+  }
+
+  if (!boFormat) {
+    configIndex=0;
+    logW("choosing the first config.\n");
+  }
+
+  if (configIndex==-1) {
+    for (int i=0; i<count; i++) {
+      EGLint id;
+      
+      if (!eglGetConfigAttrib(eglInst,configs[i],EGL_NATIVE_VISUAL_ID,&id))
+        continue;
+      
+      if (id==(int)boFormat) {
+        configIndex=i;
+        break;
+      }
+    }
+  }
+
+  if (configIndex!=-1) {
+    eglConf=configs[configIndex];
+    delete[] configs;
+  } else {
+    logE("no EGL config chosen!\n");
+    delete[] configs;
+    return false;
+  }
+
+  logD("create context...\n");
+  eglContext=eglCreateContext(eglInst,eglConf,EGL_NO_CONTEXT,contextAttr);
+  if (eglContext==EGL_NO_CONTEXT) {
+    logE("couldn't create OpenGL context!\n");
+    return false;
+  }
+
+  // make current
+  logD("make current...\n");
+  if (!eglMakeCurrent(eglInst,EGL_NO_SURFACE,EGL_NO_SURFACE,eglContext)) {
+    logE("couldn't make current!\n");
+    return false;
+  }
+
+  glExts=(const char*)glGetString(GL_EXTENSIONS);
+
+  logD("OpenGL ES info:\n");
+  logD("- version %s (GLSL %s)\n",glGetString(GL_VERSION),glGetString(GL_SHADING_LANGUAGE_VERSION));
+  logD("- vendor: %s\n",glGetString(GL_VENDOR));
+  logD("- renderer: %s\n",glGetString(GL_RENDERER));
+
+  // get GL extensions
+  REQUIRE_GL_PROC_DEFAULT(glExts,"GL_OES_EGL_image",glEGLImageTargetTexture2DOES);
+
+  // create output buffer
+  logD("create output buffer...\n");
+  int boFD=gbm_bo_get_fd(compoBo);
+  if (boFD<0) {
+    logE("couldn't get FD of compositor BO.\n");
+    return false;
+  }
+
+  EGLint imageAttr[]={
+    EGL_WIDTH, (int)gbm_bo_get_width(compoBo),
+    EGL_HEIGHT, (int)gbm_bo_get_height(compoBo),
+    EGL_LINUX_DRM_FOURCC_EXT, (int)gbm_bo_get_format(compoBo),
+    EGL_DMA_BUF_PLANE0_FD_EXT, boFD,
+    EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+    EGL_DMA_BUF_PLANE0_PITCH_EXT, (int)gbm_bo_get_stride(compoBo),
+    EGL_NONE,
+  };
+
+  eglOut=eglCreateImageKHR(eglInst,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,imageAttr);
+  if (eglOut==EGL_NO_IMAGE_KHR) {
+    logE("couldn't create image.\n");
+    return false;
+  }
+  // I wonder why. we WILL need this later.
+  close(boFD);
+
+  logD("create output texture...\n");
+  glGenTextures(1,&compoTex);
+  glBindTexture(GL_TEXTURE_2D,compoTex);
+  glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,eglOut);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+  glBindTexture(GL_TEXTURE_2D,0);
+
+  glGenFramebuffers(1,&compoFB);
+  glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
+  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,compoTex,0);
+
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) {
+    logE("framebuffer isn't complete.\n");
+    glDeleteFramebuffers(1,&compoFB);
+    glDeleteTextures(1,&compoTex);
+    return false;
+  }
+
+  // initialize OpenGL
+  logD("initialize the rest...\n");
+  glViewport(0,0,ow,oh);
+
+  logD("complete!\n");
+  return true;
+}
+
+bool composeFrameEGL() {
+  glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
+
+  glClearColor(0.35, 0.5, 0.75, 1.0);
+  glClear(GL_COLOR_BUFFER_BIT);
+
+  glFinish();
+  return true;
 }
 
 bool needsValue(string param) {
@@ -1721,11 +1953,11 @@ int main(int argc, char** argv) {
   
   printf("\x1b[1m|\x1b[m\n");
   if (meitner) {
-    printf("\x1b[1m|\x1b[0;34m ~~~~> \x1b[1;33mDARMSTADT ~~DUAL-MUX EDITION~~ (meitner mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[0;34m ~~~~> \x1b[1;33mDARMSTADT => EGL <= (meitner mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
   } else if (hesse) {
-    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT ~~DUAL-MUX EDITION~~ (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT => EGL <= (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
   } else {
-    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT ~~DUAL-MUX EDITION~~ \x1b[1;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT => EGL <= \x1b[1;32m" DARM_VERSION "\x1b[m\n");
   }
   if (qp==0) printf("\x1b[1;31m> !!! -> -> LOSSLESS <- <- !!! <\x1b[m\n");
   printf("\x1b[1m|\x1b[m\n");
@@ -1886,7 +2118,7 @@ int main(int argc, char** argv) {
     intptr_t boFD=gbm_bo_get_fd(compoBo);
     if (boFD<0) {
       logE("could not fuck the BO\n");
-      return false;
+      return 1;
     }
 
     vaCompoBD.buffers=(uintptr_t*)&boFD;
@@ -1911,14 +2143,14 @@ int main(int argc, char** argv) {
 
     if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&portFrame,1,coAttr,3))!=VA_STATUS_SUCCESS) {
       logE("could not create surface for compositing... %x\n",vaStat);
-      return false;
+      return 1;
     }
 
     if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
       logE("no surface sync %x\n",vaStat);
     }
 
-    if (!composeFrameVA()) {
+    if (!composeFrameEGL()) {
       logE("couldn't compose frame.\n");
       return 1;
     }
