@@ -795,7 +795,7 @@ bool composeFrameEGL() {
   glClearColor(0.35, 0.5, 0.75, 1.0);
   glClear(GL_COLOR_BUFFER_BIT);
 
-
+  
 
   glFinish();
 
