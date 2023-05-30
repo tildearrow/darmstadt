@@ -95,6 +95,9 @@ const char* eglExtsBase=NULL;
 const char* eglExtsInst=NULL;
 const char* glExts=NULL;
 GLuint renderVertexS, renderFragmentS, renderProgram;
+GLfloat planeTri[16][12];
+GLfloat planeUV[16][8];
+GLuint planeTriBO;
 
 // X11 CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
 pthread_t x11Thread;
@@ -182,6 +185,7 @@ const char* renderVertex=
   "  vTexCoord=in_TexCoord;\n"
   "}\n";
 
+/*
 const char* renderFragment=
   "precision mediump float;\n"
   "uniform sampler2D uTexture;\n"
@@ -189,6 +193,16 @@ const char* renderFragment=
   "\n"
   "void main() {\n"
   "  gl_FragColor=texture2D(uTexture,vTexCoord);\n"
+  "}\n";
+*/
+
+const char* renderFragment=
+  "precision mediump float;\n"
+  "uniform sampler2D uTexture;\n"
+  "varying vec2 vTexCoord;\n"
+  "\n"
+  "void main() {\n"
+  "  gl_FragColor=vec4(vTexCoord.x,vTexCoord.y,0.0,1.0);\n"
   "}\n";
 
 // stuff
@@ -690,10 +704,13 @@ bool initEGL() {
   renderProgram=glCreateProgram();
   glAttachShader(renderProgram,renderVertexS);
   glAttachShader(renderProgram,renderFragmentS);
+  glBindAttribLocation(renderProgram,1,"in_TexCoord");
   glLinkProgram(renderProgram);
 
   logD("initialize the rest...\n");
   glViewport(0,0,ow,oh);
+
+  glGenBuffers(1,&planeTriBO);
 
   logD("complete!\n");
   return true;
@@ -790,13 +807,60 @@ bool composeFrameEGL() {
   short cursorY=curPos&0xffff;
   logD("cursor pos: %d, %d\n",cursorX,cursorY);
 
+  // prepare positions
+  int index=0;
+  for (DarmPlane& i: availPlanes) {
+    double x=((double)i.plane->x/((double)ow*0.5))-1.0;
+    double y=1.0-((double)i.plane->y/((double)oh*0.5));
+    double w=(i.fb->width/(double)ow*0.5);
+    double h=(i.fb->height/(double)oh*0.5);
+    planeTri[index][0]=x;
+    planeTri[index][1]=y;
+    planeTri[index][2]=0.0f;
+    planeTri[index][3]=x+w;
+    planeTri[index][4]=y;
+    planeTri[index][5]=0.0f;
+    planeTri[index][6]=x+w;
+    planeTri[index][7]=y-h;
+    planeTri[index][8]=0.0f;
+    planeTri[index][9]=x;
+    planeTri[index][10]=y-h;
+    planeTri[index][11]=0.0f;
+
+    planeUV[index][0]=0.0f;
+    planeUV[index][1]=0.0f;
+    planeUV[index][2]=1.0f;
+    planeUV[index][3]=0.0f;
+    planeUV[index][4]=1.0f;
+    planeUV[index][5]=1.0f;
+    planeUV[index][6]=0.0f;
+    planeUV[index][7]=1.0f;
+
+    index++;
+  }
+
+  // draw
   glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
 
   glClearColor(0.35, 0.5, 0.75, 1.0);
   glClear(GL_COLOR_BUFFER_BIT);
 
-  
+  glBindBuffer(GL_ARRAY_BUFFER,planeTriBO);
+  glBufferData(GL_ARRAY_BUFFER,sizeof(planeTri)+sizeof(planeUV),planeTri,GL_STATIC_DRAW);
+  glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,0,NULL);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,(void*)sizeof(planeTri));
+  glEnableVertexAttribArray(1);
 
+  glUseProgram(renderProgram);
+
+  // ???
+  int first=0;
+  for (DarmPlane& i: availPlanes) {
+    glDrawArrays(GL_TRIANGLE_STRIP,first,4);
+    first+=4;
+  }
+  
   glFinish();
 
   // cleanup
