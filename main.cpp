@@ -623,13 +623,95 @@ bool initEGL() {
   return true;
 }
 
+struct DarmPlane {
+  drmModePlanePtr plane;
+  drmModeFBPtr fb;
+  int buf;
+  DarmPlane(drmModePlanePtr p, drmModeFBPtr f, int b):
+    plane(p),
+    fb(f),
+    buf(b) {}
+  DarmPlane():
+    plane(NULL),
+    fb(NULL),
+    buf(-1) {}
+};
+
 bool composeFrameEGL() {
+  std::vector<DarmPlane> availPlanes;
+
+  planeres=drmModeGetPlaneResources(fd);
+  if (planeres==NULL) {
+    logE("\x1b[2K\x1b[1;31m%d: plane resources unavailable!\x1b[m\n");
+    return false;
+  }
+
+  for (unsigned int i=0; i<planeres->count_planes; i++) {
+    plane=drmModeGetPlane(fd,planeres->planes[i]);
+    if (plane==NULL) {
+      //logD("skipping plane %d...\n",planeres->planes[i]);
+      continue;
+    }
+
+    if (plane->fb_id==0) {
+      //printf("\x1b[2K\x1b[1;31m%d: the plane doesn't have a framebuffer!\x1b[m\n",frame);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    printf("\x1b[2K\x1b[1;32m%d: composing FB %d...\x1b[m\n",frame,plane->fb_id);
+    
+    fb=drmModeGetFB(fd,plane->fb_id);
+    if (fb==NULL) {
+      printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+    if (!fb->handle) {
+      printf("\x1b[2K\x1b[1;31m%d: the framebuffer has invalid handle!\x1b[m\n",frame);
+      drmModeFreeFB(fb);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
+      printf("\x1b[2K\x1b[1;31m%d: unable to prepare framebuffer for the compositor!\x1b[m\n",frame);
+      drmModeFreeFB(fb);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    availPlanes.push_back(DarmPlane(plane,fb,primefd));
+
+    plane=NULL;
+  }
+
+  // create textures
+  for (DarmPlane& i: availPlanes) {
+    logD("- %d (%d, %d)\n",i.fb->fb_id,i.plane->crtc_x,i.plane->crtc_y);
+  }
+
   glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
 
   glClearColor(0.35, 0.5, 0.75, 1.0);
   glClear(GL_COLOR_BUFFER_BIT);
 
+
+
   glFinish();
+
+  // cleanup
+  for (DarmPlane& i: availPlanes) {
+    close(i.buf);
+    drmModeFreeFB(i.fb);
+    drmModeFreePlane(i.plane);
+  }
+  drmModeFreePlaneResources(planeres);
+
   return true;
 }
 
