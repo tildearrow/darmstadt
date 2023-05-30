@@ -3,6 +3,8 @@
 #include <GLES2/gl2.h>
 #include <va/va.h>
 #include <xf86drmMode.h>
+#include <X11/Xlib.h>
+#include <atomic>
 
 PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
 PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
@@ -92,6 +94,14 @@ gbm_bo* compoBo;
 const char* eglExtsBase=NULL;
 const char* eglExtsInst=NULL;
 const char* glExts=NULL;
+GLuint renderVertexS, renderFragmentS, renderProgram;
+
+// X11 CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
+pthread_t x11Thread;
+Display* x11Inst;
+Window x11Screen;
+// (X, Y) 16.16
+std::atomic<unsigned int> cursorPos;
 
 // VIDEO //
 AVStream* stream;
@@ -160,6 +170,28 @@ AVRational audiotb;
 // meitner: capture on AMD/Intel, encode using x264/x265
 bool hesse, meitner, absolPerf, tenBit;
 
+// constants
+const char* renderVertex=
+  "attribute vec4 in_position;\n"
+  "attribute vec2 in_TexCoord;\n"
+  "\n"
+  "varying vec2 vTexCoord;\n"
+  "\n"
+  "void main() {\n"
+  "  gl_Position=in_position;\n"
+  "  vTexCoord=in_TexCoord;\n"
+  "}\n";
+
+const char* renderFragment=
+  "precision mediump float;\n"
+  "uniform sampler2D uTexture;\n"
+  "varying vec2 vTexCoord;\n"
+  "\n"
+  "void main() {\n"
+  "  gl_FragColor=texture2D(uTexture,vTexCoord);\n"
+  "}\n";
+
+// stuff
 int writeToCache(void*, unsigned char* buf, int size) {
   bitRatePre+=size;
   totalWritten+=size;
@@ -362,6 +394,36 @@ bool composeFrameVA() {
   drmModeFreePlaneResources(planeres);
 
   return true;
+}
+
+void* x11CursorThread(void*) {
+  Window window_returned;
+  int rootX, rootY;
+  int winX, winY;
+  unsigned int mask;
+
+  while (true) {
+    if (quit) break;
+    x11Inst=XOpenDisplay(NULL);
+    if (x11Inst==NULL) {
+      logD("no X11 display found! retrying in 10 seconds...\n");
+      sleep(10);
+      continue;
+    }
+    x11Screen=XRootWindow(x11Inst,0);
+
+    while (true) {
+      if (quit) break;
+      XQueryPointer(x11Inst,x11Screen,&window_returned,&window_returned,&rootX,&rootY,&winX,&winY,&mask);
+      short x=rootX;
+      short y=rootY;
+      cursorPos=((unsigned short)x<<16)|((unsigned short)y);
+      usleep(10000);
+    }
+    XCloseDisplay(x11Inst);
+  }
+
+  return NULL;
 }
 
 void* initGLProc(const char* extList, const char* extName, const char* procName) {
@@ -615,7 +677,21 @@ bool initEGL() {
     return false;
   }
 
-  // initialize OpenGL
+  // initialize OpenGL (TODO: error checks)
+  logD("initialize shader...\n");
+  renderVertexS=glCreateShader(GL_VERTEX_SHADER);
+  glShaderSource(renderVertexS,1,&renderVertex,NULL);
+  glCompileShader(renderVertexS);
+
+  renderFragmentS=glCreateShader(GL_FRAGMENT_SHADER);
+  glShaderSource(renderFragmentS,1,&renderFragment,NULL);
+  glCompileShader(renderFragmentS);
+
+  renderProgram=glCreateProgram();
+  glAttachShader(renderProgram,renderVertexS);
+  glAttachShader(renderProgram,renderFragmentS);
+  glLinkProgram(renderProgram);
+
   logD("initialize the rest...\n");
   glViewport(0,0,ow,oh);
 
@@ -625,14 +701,17 @@ bool initEGL() {
 
 struct DarmPlane {
   drmModePlanePtr plane;
+  drmModeCrtcPtr crtc;
   drmModeFBPtr fb;
   int buf;
-  DarmPlane(drmModePlanePtr p, drmModeFBPtr f, int b):
+  DarmPlane(drmModePlanePtr p, drmModeCrtcPtr c, drmModeFBPtr f, int b):
     plane(p),
+    crtc(c),
     fb(f),
     buf(b) {}
   DarmPlane():
     plane(NULL),
+    crtc(NULL),
     fb(NULL),
     buf(-1) {}
 };
@@ -660,11 +739,20 @@ bool composeFrameEGL() {
       continue;
     }
 
+    drmModeCrtcPtr crtc=drmModeGetCrtc(fd,plane->crtc_id);
+    if (crtc==NULL) {
+      printf("\x1b[2K\x1b[1;31m%d: no CRTC!\x1b[m\n",frame);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
     printf("\x1b[2K\x1b[1;32m%d: composing FB %d...\x1b[m\n",frame,plane->fb_id);
     
     fb=drmModeGetFB(fd,plane->fb_id);
     if (fb==NULL) {
       printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
+      drmModeFreeCrtc(crtc);
       drmModeFreePlane(plane);
       plane=NULL;
       continue;
@@ -672,6 +760,7 @@ bool composeFrameEGL() {
     if (!fb->handle) {
       printf("\x1b[2K\x1b[1;31m%d: the framebuffer has invalid handle!\x1b[m\n",frame);
       drmModeFreeFB(fb);
+      drmModeFreeCrtc(crtc);
       drmModeFreePlane(plane);
       plane=NULL;
       continue;
@@ -680,20 +769,26 @@ bool composeFrameEGL() {
     if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
       printf("\x1b[2K\x1b[1;31m%d: unable to prepare framebuffer for the compositor!\x1b[m\n",frame);
       drmModeFreeFB(fb);
+      drmModeFreeCrtc(crtc);
       drmModeFreePlane(plane);
       plane=NULL;
       continue;
     }
 
-    availPlanes.push_back(DarmPlane(plane,fb,primefd));
+    availPlanes.push_back(DarmPlane(plane,crtc,fb,primefd));
 
     plane=NULL;
   }
 
   // create textures
   for (DarmPlane& i: availPlanes) {
-    logD("- %d (%d, %d)\n",i.fb->fb_id,i.plane->crtc_x,i.plane->crtc_y);
+    logD("- %d\n",i.fb->fb_id);
   }
+
+  unsigned int curPos=cursorPos;
+  short cursorX=curPos>>16;
+  short cursorY=curPos&0xffff;
+  logD("cursor pos: %d, %d\n",cursorX,cursorY);
 
   glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
 
@@ -708,6 +803,7 @@ bool composeFrameEGL() {
   for (DarmPlane& i: availPlanes) {
     close(i.buf);
     drmModeFreeFB(i.fb);
+    drmModeFreeCrtc(i.crtc);
     drmModeFreePlane(i.plane);
   }
   drmModeFreePlaneResources(planeres);
@@ -2021,6 +2117,12 @@ int main(int argc, char** argv) {
     return 1;
   }
   // FFMPEG INIT END //
+
+  // CURSOR INIT BEGIN //
+  if (pthread_create(&x11Thread,NULL,x11CursorThread,NULL)!=0) {
+    logW("couldn't create cursor thread!\n");
+  }
+  // CURSOR INIT END //
 
   sigaction(SIGINT,&saTerm,NULL);
   sigaction(SIGTERM,&saTerm,NULL);
