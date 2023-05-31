@@ -2278,7 +2278,7 @@ int main(int argc, char** argv) {
       speeds[delta]++;
     }
 
-    printf("\x1b[2K\x1b[0;33m%d: time: %ldµs\x1b[m\n",frame,(tEnd-tStart).tv_nsec/1000);
+    //printf("\x1b[2K\x1b[0;33m%d: time: %ldµs\x1b[m\n",frame,(tEnd-tStart).tv_nsec/1000);
 
     // RETRIEVE CODE BEGIN //
     tStart=curTime(CLOCK_MONOTONIC);
