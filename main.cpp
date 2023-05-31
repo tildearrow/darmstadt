@@ -810,20 +810,22 @@ bool composeFrameEGL() {
   // prepare positions
   int index=0;
   for (DarmPlane& i: availPlanes) {
-    double x=((double)i.plane->x/((double)ow*0.5))-1.0;
-    double y=1.0-((double)i.plane->y/((double)oh*0.5));
-    double w=(i.fb->width/(double)ow*0.5);
-    double h=(i.fb->height/(double)oh*0.5);
+    int px=index?cursorX:i.plane->x;
+    int py=index?cursorY:i.plane->y;
+    double x=((double)px/((double)ow*0.5))-1.0;
+    double y=1.0-((double)py/((double)oh*0.5));
+    double w=(i.fb->width/((double)ow*0.5));
+    double h=(i.fb->height/((double)oh*0.5));
     planeTri[index][0]=x;
     planeTri[index][1]=y;
     planeTri[index][2]=0.0f;
     planeTri[index][3]=x+w;
     planeTri[index][4]=y;
     planeTri[index][5]=0.0f;
-    planeTri[index][6]=x+w;
+    planeTri[index][6]=x;
     planeTri[index][7]=y-h;
     planeTri[index][8]=0.0f;
-    planeTri[index][9]=x;
+    planeTri[index][9]=x+w;
     planeTri[index][10]=y-h;
     planeTri[index][11]=0.0f;
 
@@ -831,9 +833,9 @@ bool composeFrameEGL() {
     planeUV[index][1]=0.0f;
     planeUV[index][2]=1.0f;
     planeUV[index][3]=0.0f;
-    planeUV[index][4]=1.0f;
+    planeUV[index][4]=0.0f;
     planeUV[index][5]=1.0f;
-    planeUV[index][6]=0.0f;
+    planeUV[index][6]=1.0f;
     planeUV[index][7]=1.0f;
 
     index++;
