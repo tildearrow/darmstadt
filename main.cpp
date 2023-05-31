@@ -185,17 +185,17 @@ const char* renderVertex=
   "  vTexCoord=in_TexCoord;\n"
   "}\n";
 
-/*
 const char* renderFragment=
+  "#extension GL_OES_EGL_image_external : enable\n"
   "precision mediump float;\n"
-  "uniform sampler2D uTexture;\n"
+  "uniform samplerExternalOES uTexture;\n"
   "varying vec2 vTexCoord;\n"
   "\n"
   "void main() {\n"
   "  gl_FragColor=texture2D(uTexture,vTexCoord);\n"
   "}\n";
-*/
 
+/*
 const char* renderFragment=
   "precision mediump float;\n"
   "uniform sampler2D uTexture;\n"
@@ -204,6 +204,7 @@ const char* renderFragment=
   "void main() {\n"
   "  gl_FragColor=vec4(vTexCoord.x,vTexCoord.y,0.0,1.0);\n"
   "}\n";
+  */
 
 // stuff
 int writeToCache(void*, unsigned char* buf, int size) {
@@ -692,23 +693,42 @@ bool initEGL() {
   }
 
   // initialize OpenGL (TODO: error checks)
+  int shStatus;
   logD("initialize shader...\n");
   renderVertexS=glCreateShader(GL_VERTEX_SHADER);
   glShaderSource(renderVertexS,1,&renderVertex,NULL);
   glCompileShader(renderVertexS);
+  glGetShaderiv(renderVertexS,GL_COMPILE_STATUS,&shStatus);
+  if (!shStatus) {
+    logE("failed to compile vertex shader!\n");
+    return false;
+  }
 
   renderFragmentS=glCreateShader(GL_FRAGMENT_SHADER);
   glShaderSource(renderFragmentS,1,&renderFragment,NULL);
   glCompileShader(renderFragmentS);
+  glGetShaderiv(renderFragmentS,GL_COMPILE_STATUS,&shStatus);
+  if (!shStatus) {
+    logE("failed to compile fragment shader!\n");
+    return false;
+  }
 
   renderProgram=glCreateProgram();
   glAttachShader(renderProgram,renderVertexS);
   glAttachShader(renderProgram,renderFragmentS);
   glBindAttribLocation(renderProgram,1,"in_TexCoord");
   glLinkProgram(renderProgram);
+  glGetProgramiv(renderProgram,GL_LINK_STATUS,&shStatus);
+  if (!shStatus) {
+    logE("failed to link shader!\n");
+    return false;
+  }
 
   logD("initialize the rest...\n");
   glViewport(0,0,ow,oh);
+  glDisable(GL_DEPTH_TEST);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
 
   glGenBuffers(1,&planeTriBO);
 
@@ -721,16 +741,22 @@ struct DarmPlane {
   drmModeCrtcPtr crtc;
   drmModeFBPtr fb;
   int buf;
+  EGLImageKHR image;
+  GLuint texture;
   DarmPlane(drmModePlanePtr p, drmModeCrtcPtr c, drmModeFBPtr f, int b):
     plane(p),
     crtc(c),
     fb(f),
-    buf(b) {}
+    buf(b),
+    image(EGL_NO_IMAGE_KHR),
+    texture(0) {}
   DarmPlane():
     plane(NULL),
     crtc(NULL),
     fb(NULL),
-    buf(-1) {}
+    buf(-1),
+    image(EGL_NO_IMAGE_KHR),
+    texture(0) {}
 };
 
 bool composeFrameEGL() {
@@ -800,6 +826,32 @@ bool composeFrameEGL() {
   // create textures
   for (DarmPlane& i: availPlanes) {
     logD("- %d\n",i.fb->fb_id);
+    EGLint imageAttr[]={
+      EGL_WIDTH, (int)i.fb->width,
+      EGL_HEIGHT, (int)i.fb->height,
+      EGL_LINUX_DRM_FOURCC_EXT, GBM_FORMAT_ARGB8888,
+      EGL_DMA_BUF_PLANE0_FD_EXT, i.buf,
+      EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+      EGL_DMA_BUF_PLANE0_PITCH_EXT, (int)i.fb->pitch,
+      EGL_NONE,
+    };
+
+    i.image=eglCreateImageKHR(eglInst,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,imageAttr);
+    if (i.image==EGL_NO_IMAGE_KHR) {
+      logE("couldn't create image.\n");
+      continue;
+    }
+    // supposedly close goes here, but no thanks.
+
+    logD("create output texture...\n");
+    glGenTextures(1,&i.texture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES,i.image);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
   }
 
   unsigned int curPos=cursorPos;
@@ -813,7 +865,7 @@ bool composeFrameEGL() {
     int px=index?cursorX:i.plane->x;
     int py=index?cursorY:i.plane->y;
     double x=((double)px/((double)ow*0.5))-1.0;
-    double y=1.0-((double)py/((double)oh*0.5));
+    double y=((double)py/((double)oh*0.5))-1.0;
     double w=(i.fb->width/((double)ow*0.5));
     double h=(i.fb->height/((double)oh*0.5));
     planeTri[index][0]=x;
@@ -823,10 +875,10 @@ bool composeFrameEGL() {
     planeTri[index][4]=y;
     planeTri[index][5]=0.0f;
     planeTri[index][6]=x;
-    planeTri[index][7]=y-h;
+    planeTri[index][7]=y+h;
     planeTri[index][8]=0.0f;
     planeTri[index][9]=x+w;
-    planeTri[index][10]=y-h;
+    planeTri[index][10]=y+h;
     planeTri[index][11]=0.0f;
 
     planeUV[index][0]=0.0f;
@@ -854,11 +906,14 @@ bool composeFrameEGL() {
   glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,(void*)sizeof(planeTri));
   glEnableVertexAttribArray(1);
 
-  glUseProgram(renderProgram);
-
   // ???
   int first=0;
   for (DarmPlane& i: availPlanes) {
+    glUseProgram(renderProgram);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
+    int where=glGetUniformLocation(renderProgram,"uTexture");
+    glUniform1i(where,0);
     glDrawArrays(GL_TRIANGLE_STRIP,first,4);
     first+=4;
   }
@@ -867,6 +922,12 @@ bool composeFrameEGL() {
 
   // cleanup
   for (DarmPlane& i: availPlanes) {
+    if (i.texture) {
+      glDeleteTextures(1,&i.texture);
+    }
+    if (i.image!=EGL_NO_IMAGE_KHR) {
+      eglDestroyImageKHR(eglInst,i.image);
+    }
     close(i.buf);
     drmModeFreeFB(i.fb);
     drmModeFreeCrtc(i.crtc);
