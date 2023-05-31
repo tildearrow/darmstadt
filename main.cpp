@@ -4,6 +4,7 @@
 #include <va/va.h>
 #include <xf86drmMode.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/Xfixes.h>
 #include <atomic>
 
 PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
@@ -412,11 +413,6 @@ bool composeFrameVA() {
 }
 
 void* x11CursorThread(void*) {
-  Window window_returned;
-  int rootX, rootY;
-  int winX, winY;
-  unsigned int mask;
-
   while (true) {
     if (quit) break;
     x11Inst=XOpenDisplay(NULL);
@@ -429,9 +425,10 @@ void* x11CursorThread(void*) {
 
     while (true) {
       if (quit) break;
-      XQueryPointer(x11Inst,x11Screen,&window_returned,&window_returned,&rootX,&rootY,&winX,&winY,&mask);
-      short x=rootX;
-      short y=rootY;
+      XFixesCursorImage* cursor=XFixesGetCursorImage(x11Inst);
+
+      short x=cursor->x-cursor->xhot;
+      short y=cursor->y-cursor->yhot;
       cursorPos=((unsigned short)x<<16)|((unsigned short)y);
       usleep(10000);
     }
@@ -790,7 +787,7 @@ bool composeFrameEGL() {
       continue;
     }
 
-    printf("\x1b[2K\x1b[1;32m%d: composing FB %d...\x1b[m\n",frame,plane->fb_id);
+    //printf("\x1b[2K\x1b[1;32m%d: composing FB %d...\x1b[m\n",frame,plane->fb_id);
     
     fb=drmModeGetFB(fd,plane->fb_id);
     if (fb==NULL) {
@@ -825,7 +822,7 @@ bool composeFrameEGL() {
 
   // create textures
   for (DarmPlane& i: availPlanes) {
-    logD("- %d\n",i.fb->fb_id);
+    //logD("- %d\n",i.fb->fb_id);
     EGLint imageAttr[]={
       EGL_WIDTH, (int)i.fb->width,
       EGL_HEIGHT, (int)i.fb->height,
@@ -843,7 +840,7 @@ bool composeFrameEGL() {
     }
     // supposedly close goes here, but no thanks.
 
-    logD("create output texture...\n");
+    //logD("create output texture...\n");
     glGenTextures(1,&i.texture);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
@@ -857,7 +854,7 @@ bool composeFrameEGL() {
   unsigned int curPos=cursorPos;
   short cursorX=curPos>>16;
   short cursorY=curPos&0xffff;
-  logD("cursor pos: %d, %d\n",cursorX,cursorY);
+  //logD("cursor pos: %d, %d\n",cursorX,cursorY);
 
   // prepare positions
   int index=0;
@@ -918,7 +915,7 @@ bool composeFrameEGL() {
     first+=4;
   }
   
-  glFinish();
+  glFlush();
 
   // cleanup
   for (DarmPlane& i: availPlanes) {
@@ -2423,6 +2420,8 @@ int main(int argc, char** argv) {
       speeds[delta]++;
     }
 
+    printf("\x1b[2K\x1b[0;33m%d: time: %ldµs\x1b[m\n",frame,(tEnd-tStart).tv_nsec/1000);
+
     // RETRIEVE CODE BEGIN //
     tStart=curTime(CLOCK_MONOTONIC);
 
@@ -2466,7 +2465,7 @@ int main(int argc, char** argv) {
       return 1;
     }
 
-    printf("\x1b[2K\x1b[1;32m%d: preparing frame...\x1b[m\n",frame);
+    //printf("\x1b[2K\x1b[1;32m%d: preparing frame...\x1b[m\n",frame);
     
     dsScanOff[dsScanOffPos++]=(wtEnd-wtStart).tv_nsec;
     dsScanOffPos&=1023;

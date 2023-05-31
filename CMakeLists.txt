@@ -5,7 +5,7 @@ project(darmstadt)
 set(DEPENDENCIES_INCLUDE_DIRS "/usr/include/libdrm")
 set(DEPENDENCIES_DEFINES "")
 set(DEPENDENCIES_COMPILE_OPTIONS "")
-set(DEPENDENCIES_LIBRARIES drm gbm pthread va va-drm avutil avcodec avformat pulse pulse-simple GL EGL X11)
+set(DEPENDENCIES_LIBRARIES drm gbm pthread va va-drm avutil avcodec avformat pulse pulse-simple GL EGL X11 Xfixes)
 set(DEPENDENCIES_LIBRARY_DIRS "")
 set(DEPENDENCIES_LINK_OPTIONS "")
 
