@@ -99,6 +99,7 @@ GLuint renderVertexS, renderFragmentS, renderProgram;
 GLfloat planeTri[16][12];
 GLfloat planeUV[16][8];
 GLuint planeTriBO;
+GLint renderTexture;
 
 // X11 CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
 pthread_t x11Thread;
@@ -583,6 +584,7 @@ bool initEGL() {
   glDisable(GL_DEPTH_TEST);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+  renderTexture=glGetUniformLocation(renderProgram,"uTexture");
 
   glGenBuffers(1,&planeTriBO);
 
@@ -766,8 +768,7 @@ bool composeFrameEGL() {
     glUseProgram(renderProgram);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
-    int where=glGetUniformLocation(renderProgram,"uTexture");
-    glUniform1i(where,0);
+    glUniform1i(renderTexture,0);
     glDrawArrays(GL_TRIANGLE_STRIP,first,4);
     first+=4;
   }
