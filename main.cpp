@@ -44,7 +44,8 @@ struct timespec wtStart, wtEnd;
 // CONFIG //
 int dw, dh, ow, oh;
 int cx, cy, cw, ch;
-bool doCrop;
+bool doCrop=false;
+bool captureCursor=true;
 ScaleMethod sm;
 
 // VA-API //
@@ -718,6 +719,7 @@ bool composeFrameEGL() {
   // prepare positions
   int index=0;
   for (DarmPlane& i: availPlanes) {
+    if (index && !captureCursor) break;
     int px=index?cursorX:i.plane->x;
     int py=index?cursorY:i.plane->y;
     double x=((double)px/((double)ow*0.5))-1.0;
@@ -765,6 +767,7 @@ bool composeFrameEGL() {
   // ???
   int first=0;
   for (DarmPlane& i: availPlanes) {
+    if (first && !captureCursor) break;
     glUseProgram(renderProgram);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
@@ -1313,7 +1316,14 @@ bool pSetVideoScale(string val) {
 }
 
 bool pSetCursor(string) {
-  logW("Cursor capture isn't currently implemented yet...\n");
+  if (val=="on") {
+    captureCursor=true;
+  } else if (val=="off") {
+    captureCursor=false;
+  } else {
+    logE("it must be on or off.\n");
+    return false;
+  }
   return true;
 }
 
@@ -1397,7 +1407,7 @@ void initParams() {
   params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
   params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
   params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
-  params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay (Not Implemented Yet)")); // TODO
+  params.push_back(Param("C","cursor",true,pSetCursor,"on|off","enable/disable X11 cursor overlay"));
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
   params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));
   params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
@@ -2101,8 +2111,10 @@ int main(int argc, char** argv) {
   // FFMPEG INIT END //
 
   // CURSOR INIT BEGIN //
-  if (pthread_create(&x11Thread,NULL,x11CursorThread,NULL)!=0) {
-    logW("couldn't create cursor thread!\n");
+  if (captureCursor) {
+    if (pthread_create(&x11Thread,NULL,x11CursorThread,NULL)!=0) {
+      logW("couldn't create cursor thread!\n");
+    }
   }
   // CURSOR INIT END //
 
