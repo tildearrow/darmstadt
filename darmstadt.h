@@ -25,7 +25,9 @@
 #include <queue>
 #include <mutex>
 
+#ifdef HAVE_JACK
 #include <jack/jack.h>
+#endif
 
 #include <pulse/error.h>
 #include <pulse/simple.h>
@@ -42,7 +44,7 @@ extern "C" {
 
 #define DEVICE_PATH "/dev/dri/card1"
 
-#define DARM_VERSION "v3.0pre2"
+#define DARM_VERSION "v3.0"
 
 #define DARM_RINGBUF_SIZE 134217728
 
@@ -144,6 +146,7 @@ class AudioEngine {
     virtual const char* engineName();
 };
 
+#ifdef HAVE_JACK
 class JACKAudioEngine: public AudioEngine {
   jack_client_t* ac;
   jack_port_t* ai[8];
@@ -163,6 +166,7 @@ class JACKAudioEngine: public AudioEngine {
     bool init(string dn);
     const char* engineName();
 };
+#endif
 
 class PulseAudioEngine: public AudioEngine {
   pa_simple* ac;

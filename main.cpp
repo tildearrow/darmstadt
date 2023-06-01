@@ -1,7 +1,27 @@
 #include "darmstadt.h"
+#include "eglcommon.h"
+#include <GLES2/gl2.h>
+#include <va/va.h>
+#include <xf86drmMode.h>
+#include <X11/Xlib.h>
+#include <X11/extensions/Xfixes.h>
+#include <atomic>
+#include "imgui.h"
+#include "imgui/backends/imgui_impl_opengl3.h"
+
+PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
+PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
+PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
+PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
+PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR;
+PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR;
+PFNEGLWAITSYNCKHRPROC eglWaitSyncKHR;
+PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR;
+PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID;
 
 bool quit, newSize;
 
+// HARDWARE //
 int fd, primefd, renderfd;
 
 drmModePlaneRes* planeres;
@@ -9,42 +29,41 @@ drmModePlane* plane;
 drmModeFB* fb;
 drmModeCrtc* disp;
 drmVBlank vblank;
-unsigned int oldHandle=0;
+unsigned int oldFBID=0;
 int repeatCount=0;
 
-unsigned int planeid;
+gbm_device* gbmDevice;
 
+// STATS //
 int frame;
 int framerate;
 struct timespec btime, vtime, dtime, lastATime, sATime;
 
+int recal=0;
+int arecal=0;
+int audioStalls=0;
 int videoStalls=0;
 
 struct timespec wtStart, wtEnd;
 
+// CONFIG //
 int dw, dh, ow, oh;
 int cx, cy, cw, ch;
-bool doCrop;
+bool doCrop=false;
+bool captureCursor=true;
+bool drawDebug=false;
 ScaleMethod sm;
 
-pthread_t thr;
-std::queue<qFrame> frames;
-
+// VA-API //
 VADisplay vaInst;
 VASurfaceAttribExternalBuffers vaBD;
 VAContextID scalerC;
-VAContextID copierC;
 VASurfaceID surface;
-VASurfaceID portFrame[16];
-VAConfigID vaConf;
+VAConfigID vaConfS;
 VABufferID scalerBuf;
-VABufferID copierBuf;
 VASurfaceAttrib vaAttr[2];
-VASurfaceAttrib coAttr[2];
 VAProcPipelineParameterBuffer scaler;
 VARectangle scaleRegion, cropRegion;
-VAProcPipelineParameterBuffer copier;
-VARectangle copyRegion;
 VAImage img;
 VAImageFormat imgFormat;
 VAImageFormat allowedFormats[2048];
@@ -61,6 +80,41 @@ int discvar1, discvar2;
 unsigned char* addr;
 unsigned long portedFD;
 struct timespec tStart, tEnd;
+long tDelta;
+
+// COMPOSITOR - VA //
+VASurfaceAttribExternalBuffers vaCompoBD;
+VAContextID copierC;
+VABufferID copierBuf;
+VASurfaceID portFrame;
+VABlendState compoBS;
+VASurfaceAttrib coAttr[3];
+VAProcPipelineParameterBuffer copier;
+VARectangle copyRegion;
+
+// COMPOSITOR - EGL //
+EGLDisplay eglInst;
+EGLConfig eglConf;
+EGLContext eglContext;
+EGLImageKHR eglOut;
+GLuint compoTex;
+GLuint compoFB;
+gbm_bo* compoBo;
+const char* eglExtsBase=NULL;
+const char* eglExtsInst=NULL;
+const char* glExts=NULL;
+GLuint renderVertexS, renderFragmentS, renderProgram;
+GLfloat planeTri[16][12];
+GLfloat planeUV[16][8];
+GLuint planeTriBO;
+GLint renderTexture;
+
+// X11 CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
+pthread_t x11Thread;
+Display* x11Inst;
+Window x11Screen;
+// (X, Y) 16.16
+std::atomic<unsigned int> cursorPos;
 
 // VIDEO //
 AVStream* stream;
@@ -84,6 +138,7 @@ AVDictionary* audEncOpt;
 AVPacket* audPacket;
 string audName;
 
+// OUTPUT //
 AVFormatContext* out;
 
 #define DARM_AVIO_BUFSIZE 131072
@@ -102,6 +157,7 @@ const char* outname="out.nut";
 
 SyncMethod syncMethod;
 
+// AUDIO SETTINGS //
 AudioType audioType;
 AudioEngine* ae;
 float audGain, audLimAmt;
@@ -109,7 +165,6 @@ bool audLimiter;
 
 struct winsize winSize;
 
-//std::vector<Device> devices;
 drmDevice* devices[128];
 int deviceCount;
 std::vector<Param> params;
@@ -128,6 +183,40 @@ AVRational audiotb;
 // meitner: capture on AMD/Intel, encode using x264/x265
 bool hesse, meitner, absolPerf, tenBit;
 
+// constants
+const char* renderVertex=
+  "attribute vec4 in_position;\n"
+  "attribute vec2 in_TexCoord;\n"
+  "\n"
+  "varying vec2 vTexCoord;\n"
+  "\n"
+  "void main() {\n"
+  "  gl_Position=in_position;\n"
+  "  vTexCoord=in_TexCoord;\n"
+  "}\n";
+
+const char* renderFragment=
+  "#extension GL_OES_EGL_image_external : enable\n"
+  "precision mediump float;\n"
+  "uniform samplerExternalOES uTexture;\n"
+  "varying vec2 vTexCoord;\n"
+  "\n"
+  "void main() {\n"
+  "  gl_FragColor=texture2D(uTexture,vTexCoord);\n"
+  "}\n";
+
+/*
+const char* renderFragment=
+  "precision mediump float;\n"
+  "uniform sampler2D uTexture;\n"
+  "varying vec2 vTexCoord;\n"
+  "\n"
+  "void main() {\n"
+  "  gl_FragColor=vec4(vTexCoord.x,vTexCoord.y,0.0,1.0);\n"
+  "}\n";
+  */
+
+// stuff
 int writeToCache(void*, unsigned char* buf, int size) {
   bitRatePre+=size;
   totalWritten+=size;
@@ -148,21 +237,7 @@ int64_t seekCache(void*, int64_t off, int whence) {
   return 0;
 }
 
-void* unbuff(void*) {
-  qFrame f;
-  
-  while (1) {
-    while (!frames.empty()) {
-      f=frames.back();
-      frames.pop();
-      printf("popped frame. there are now %lu frames\n",frames.size());
-    }
-    usleep(1000);
-  }
-  return NULL;
-}
-
-static int encode_write(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout, AVStream* str)
+static int writeFrame(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout, AVStream* str)
 {
     int ret = 0;
     AVPacket* enc_pkt=av_packet_alloc();
@@ -199,6 +274,592 @@ end:
     av_packet_free(&enc_pkt);
     ret = ((ret == AVERROR(EAGAIN)) ? 0 : -1);
     return ret;
+}
+
+void* x11CursorThread(void*) {
+  while (true) {
+    if (quit) break;
+    x11Inst=XOpenDisplay(NULL);
+    if (x11Inst==NULL) {
+      logD("no X11 display found! retrying in 10 seconds...\n");
+      sleep(10);
+      continue;
+    }
+    x11Screen=XRootWindow(x11Inst,0);
+
+    while (true) {
+      if (quit) break;
+      XFixesCursorImage* cursor=XFixesGetCursorImage(x11Inst);
+
+      short x=cursor->x-cursor->xhot;
+      short y=cursor->y-cursor->yhot;
+      cursorPos=((unsigned short)x<<16)|((unsigned short)y);
+
+      XFree(cursor);
+      usleep(10000);
+    }
+    XCloseDisplay(x11Inst);
+  }
+
+  return NULL;
+}
+
+void* initGLProc(const char* extList, const char* extName, const char* procName) {
+  size_t len=strlen(extName);
+  const char* name=extList;
+
+  if (name==NULL) {
+    logW("extension list is null\n");
+    return NULL;
+  }
+  if (name[0]==0) {
+    logW("extension list is empty\n");
+    return NULL;
+  }
+
+  // find extension
+  while (true) {
+    name=strstr(name,extName);
+    if (name==NULL) {
+      logW("extension %s not found.\n",extName);
+      return NULL;
+    }
+    if (name[len]==0 || name[len]==' ') break;
+    name+=len;
+  }
+
+  // get proc address
+  return (void*)eglGetProcAddress(procName);
+}
+
+#define INIT_GL_PROC(_e,_n,_p) { \
+  void* temp=initGLProc(_e,_n,#_p); \
+  memcpy(&_p,&temp,sizeof(void*)); \
+}
+
+#define REQUIRE_GL_PROC(_e,_n,_p) \
+  INIT_GL_PROC(_e,_n,_p); \
+  if (_p==NULL)
+
+#define REQUIRE_GL_PROC_DEFAULT(_e,_n,_p) \
+  REQUIRE_GL_PROC(_e,_n,_p) { \
+    logE("procedure " #_p " of extension " _n " not found.\n"); \
+    return false; \
+  }
+
+bool initEGL() {
+  // init output buffer
+  unsigned int boFormat=GBM_FORMAT_ARGB8888;
+
+  logD("creating GBM buffer...\n");
+  compoBo=gbm_bo_create(gbmDevice,ow,oh,boFormat,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
+  if (compoBo==NULL) {
+    logE("couldn't make GBM buffer.\n");
+    return false;
+  }
+
+  // check availability of GBM platform
+  logD("query base extensions...\n");
+  eglExtsBase=eglQueryString(EGL_NO_DISPLAY,EGL_EXTENSIONS);
+#ifdef EGL_MESA_platform_gbm
+  if (eglExtsBase==NULL) {
+    logE("no extensions available!\n");
+    return false;
+  }
+
+  logD("init GL proc\n");
+  REQUIRE_GL_PROC(eglExtsBase,"EGL_EXT_platform_base",eglGetPlatformDisplayEXT) {
+    logE("your setup does not support EGL_MESA_platform_gbm.\n");
+    return false;
+  }
+#endif
+
+  // open device
+  logD("open EGL device...\n");
+#ifdef EGL_MESA_platform_gbm
+  eglInst=eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_MESA,gbmDevice,NULL);
+#else
+  eglInst=eglGetDisplay(gbmDevice);
+#endif
+
+  if (eglInst==EGL_NO_DISPLAY) {
+    logE("no display...\n");
+    return false;
+  }
+
+  logD("initialize EGL...\n");
+  EGLint eglVerMajor, eglVerMinor;
+  if (!eglInitialize(eglInst,&eglVerMajor,&eglVerMinor)) {
+    logE("EGL init failed...\n");
+    return false;
+  }
+  logD("EGL version %d.%d.\n",eglVerMajor,eglVerMinor);
+
+  eglExtsInst=eglQueryString(eglInst,EGL_EXTENSIONS);
+
+  // prepare EGL extensions
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_image_base",eglCreateImageKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_image_base",eglDestroyImageKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_fence_sync",eglCreateSyncKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_fence_sync",eglDestroySyncKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_fence_sync",eglWaitSyncKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_KHR_fence_sync",eglClientWaitSyncKHR);
+  REQUIRE_GL_PROC_DEFAULT(eglExtsInst,"EGL_ANDROID_native_fence_sync",eglDupNativeFenceFDANDROID);
+
+  // prepare OpenGL
+  logD("bind API...\n");
+  if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+    logE("could not bind OpenGL ES!\n");
+    return false;
+  }
+
+  static const EGLint contextAttr[]={
+    EGL_CONTEXT_CLIENT_VERSION, 2,
+    EGL_NONE
+  };
+
+  const EGLint configAttr[]={
+    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+    EGL_RED_SIZE, 1,
+    EGL_GREEN_SIZE, 1,
+    EGL_BLUE_SIZE, 1,
+    EGL_ALPHA_SIZE, 1,
+    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+    EGL_SAMPLES, 1,
+    EGL_NONE
+  };
+
+  EGLint count=0;
+  EGLint matched=0;
+  EGLConfig *configs;
+  int configIndex=-1;
+
+  logD("choose config...\n");
+  if (!eglGetConfigs(eglInst,NULL,0,&count)) {
+    logE("no EGL configs available!\n");
+    return false;
+  }
+  if (count<1) {
+    logE("no EGL configs available!\n");
+    return false;
+  }
+  configs=new EGLConfig[count];
+
+  if (!eglChooseConfig(eglInst,configAttr,configs,count,&matched)) {
+    logE("no EGL configs with needed attributes!\n");
+    delete[] configs;
+    return false;
+  }
+  if (!matched) {
+    logE("no EGL configs with needed attributes!\n");
+    delete[] configs;
+    return false;
+  }
+
+  if (!boFormat) {
+    configIndex=0;
+    logW("choosing the first config.\n");
+  }
+
+  if (configIndex==-1) {
+    for (int i=0; i<count; i++) {
+      EGLint id;
+      
+      if (!eglGetConfigAttrib(eglInst,configs[i],EGL_NATIVE_VISUAL_ID,&id))
+        continue;
+      
+      if (id==(int)boFormat) {
+        configIndex=i;
+        break;
+      }
+    }
+  }
+
+  if (configIndex!=-1) {
+    eglConf=configs[configIndex];
+    delete[] configs;
+  } else {
+    logE("no EGL config chosen!\n");
+    delete[] configs;
+    return false;
+  }
+
+  logD("create context...\n");
+  eglContext=eglCreateContext(eglInst,eglConf,EGL_NO_CONTEXT,contextAttr);
+  if (eglContext==EGL_NO_CONTEXT) {
+    logE("couldn't create OpenGL context!\n");
+    return false;
+  }
+
+  // make current
+  logD("make current...\n");
+  if (!eglMakeCurrent(eglInst,EGL_NO_SURFACE,EGL_NO_SURFACE,eglContext)) {
+    logE("couldn't make current!\n");
+    return false;
+  }
+
+  glExts=(const char*)glGetString(GL_EXTENSIONS);
+
+  logD("OpenGL ES info:\n");
+  logD("- version %s (GLSL %s)\n",glGetString(GL_VERSION),glGetString(GL_SHADING_LANGUAGE_VERSION));
+  logD("- vendor: %s\n",glGetString(GL_VENDOR));
+  logD("- renderer: %s\n",glGetString(GL_RENDERER));
+
+  // get GL extensions
+  REQUIRE_GL_PROC_DEFAULT(glExts,"GL_OES_EGL_image",glEGLImageTargetTexture2DOES);
+
+  // create output buffer
+  logD("create output buffer...\n");
+  int boFD=gbm_bo_get_fd(compoBo);
+  if (boFD<0) {
+    logE("couldn't get FD of compositor BO.\n");
+    return false;
+  }
+
+  EGLint imageAttr[]={
+    EGL_WIDTH, (int)gbm_bo_get_width(compoBo),
+    EGL_HEIGHT, (int)gbm_bo_get_height(compoBo),
+    EGL_LINUX_DRM_FOURCC_EXT, (int)gbm_bo_get_format(compoBo),
+    EGL_DMA_BUF_PLANE0_FD_EXT, boFD,
+    EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+    EGL_DMA_BUF_PLANE0_PITCH_EXT, (int)gbm_bo_get_stride(compoBo),
+    EGL_NONE,
+  };
+
+  eglOut=eglCreateImageKHR(eglInst,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,imageAttr);
+  if (eglOut==EGL_NO_IMAGE_KHR) {
+    logE("couldn't create image.\n");
+    return false;
+  }
+  // I wonder why. we WILL need this later.
+  close(boFD);
+
+  logD("create output texture...\n");
+  glGenTextures(1,&compoTex);
+  glBindTexture(GL_TEXTURE_2D,compoTex);
+  glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,eglOut);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+  glBindTexture(GL_TEXTURE_2D,0);
+
+  glGenFramebuffers(1,&compoFB);
+  glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
+  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,compoTex,0);
+
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) {
+    logE("framebuffer isn't complete.\n");
+    glDeleteFramebuffers(1,&compoFB);
+    glDeleteTextures(1,&compoTex);
+    return false;
+  }
+
+  // initialize OpenGL (TODO: error checks)
+  int shStatus;
+  logD("initialize shader...\n");
+  renderVertexS=glCreateShader(GL_VERTEX_SHADER);
+  glShaderSource(renderVertexS,1,&renderVertex,NULL);
+  glCompileShader(renderVertexS);
+  glGetShaderiv(renderVertexS,GL_COMPILE_STATUS,&shStatus);
+  if (!shStatus) {
+    logE("failed to compile vertex shader!\n");
+    return false;
+  }
+
+  renderFragmentS=glCreateShader(GL_FRAGMENT_SHADER);
+  glShaderSource(renderFragmentS,1,&renderFragment,NULL);
+  glCompileShader(renderFragmentS);
+  glGetShaderiv(renderFragmentS,GL_COMPILE_STATUS,&shStatus);
+  if (!shStatus) {
+    logE("failed to compile fragment shader!\n");
+    return false;
+  }
+
+  renderProgram=glCreateProgram();
+  glAttachShader(renderProgram,renderVertexS);
+  glAttachShader(renderProgram,renderFragmentS);
+  glBindAttribLocation(renderProgram,1,"in_TexCoord");
+  glLinkProgram(renderProgram);
+  glGetProgramiv(renderProgram,GL_LINK_STATUS,&shStatus);
+  if (!shStatus) {
+    logE("failed to link shader!\n");
+    return false;
+  }
+
+  logD("initialize the rest...\n");
+  glViewport(0,0,ow,oh);
+  glDisable(GL_DEPTH_TEST);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+  renderTexture=glGetUniformLocation(renderProgram,"uTexture");
+
+  glGenBuffers(1,&planeTriBO);
+
+  // initialize ImGui
+  if (drawDebug) {
+    logD("initialize ImGui...\n");
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui_ImplOpenGL3_Init();
+
+    ImGui::GetIO().FontGlobalScale=2.0;
+    ImGui::GetStyle().ScaleAllSizes(2.0);
+  }
+
+  logD("complete!\n");
+  return true;
+}
+
+struct DarmPlane {
+  drmModePlanePtr plane;
+  drmModeCrtcPtr crtc;
+  drmModeFBPtr fb;
+  int buf;
+  EGLImageKHR image;
+  GLuint texture;
+  DarmPlane(drmModePlanePtr p, drmModeCrtcPtr c, drmModeFBPtr f, int b):
+    plane(p),
+    crtc(c),
+    fb(f),
+    buf(b),
+    image(EGL_NO_IMAGE_KHR),
+    texture(0) {}
+  DarmPlane():
+    plane(NULL),
+    crtc(NULL),
+    fb(NULL),
+    buf(-1),
+    image(EGL_NO_IMAGE_KHR),
+    texture(0) {}
+};
+
+bool composeFrameEGL() {
+  std::vector<DarmPlane> availPlanes;
+
+  planeres=drmModeGetPlaneResources(fd);
+  if (planeres==NULL) {
+    logE("\x1b[2K\x1b[1;31m%d: plane resources unavailable!\x1b[m\n");
+    return false;
+  }
+
+  for (unsigned int i=0; i<planeres->count_planes; i++) {
+    plane=drmModeGetPlane(fd,planeres->planes[i]);
+    if (plane==NULL) {
+      //logD("skipping plane %d...\n",planeres->planes[i]);
+      continue;
+    }
+
+    if (plane->fb_id==0) {
+      //printf("\x1b[2K\x1b[1;31m%d: the plane doesn't have a framebuffer!\x1b[m\n",frame);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    drmModeCrtcPtr crtc=drmModeGetCrtc(fd,plane->crtc_id);
+    if (crtc==NULL) {
+      printf("\x1b[2K\x1b[1;31m%d: no CRTC!\x1b[m\n",frame);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    //printf("\x1b[2K\x1b[1;32m%d: composing FB %d...\x1b[m\n",frame,plane->fb_id);
+    
+    fb=drmModeGetFB(fd,plane->fb_id);
+    if (fb==NULL) {
+      printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
+      drmModeFreeCrtc(crtc);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+    if (!fb->handle) {
+      printf("\x1b[2K\x1b[1;31m%d: the framebuffer has invalid handle!\x1b[m\n",frame);
+      drmModeFreeFB(fb);
+      drmModeFreeCrtc(crtc);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
+      printf("\x1b[2K\x1b[1;31m%d: unable to prepare framebuffer for the compositor!\x1b[m\n",frame);
+      drmModeFreeFB(fb);
+      drmModeFreeCrtc(crtc);
+      drmModeFreePlane(plane);
+      plane=NULL;
+      continue;
+    }
+
+    availPlanes.push_back(DarmPlane(plane,crtc,fb,primefd));
+
+    plane=NULL;
+  }
+
+  // create textures
+  for (DarmPlane& i: availPlanes) {
+    //logD("- %d\n",i.fb->fb_id);
+    EGLint imageAttr[]={
+      EGL_WIDTH, (int)i.fb->width,
+      EGL_HEIGHT, (int)i.fb->height,
+      EGL_LINUX_DRM_FOURCC_EXT, GBM_FORMAT_ARGB8888,
+      EGL_DMA_BUF_PLANE0_FD_EXT, i.buf,
+      EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+      EGL_DMA_BUF_PLANE0_PITCH_EXT, (int)i.fb->pitch,
+      EGL_NONE,
+    };
+
+    i.image=eglCreateImageKHR(eglInst,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,imageAttr);
+    if (i.image==EGL_NO_IMAGE_KHR) {
+      logE("couldn't create image.\n");
+      continue;
+    }
+    // supposedly close goes here, but no thanks.
+
+    //logD("create output texture...\n");
+    glGenTextures(1,&i.texture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES,i.image);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+  }
+
+  unsigned int curPos=cursorPos;
+  short cursorX=curPos>>16;
+  short cursorY=curPos&0xffff;
+  //logD("cursor pos: %d, %d\n",cursorX,cursorY);
+
+  // prepare positions
+  int index=0;
+  for (DarmPlane& i: availPlanes) {
+    if (index && !captureCursor) break;
+    int px=index?cursorX:i.plane->x;
+    int py=index?cursorY:i.plane->y;
+    double x=((double)px/((double)ow*0.5))-1.0;
+    double y=((double)py/((double)oh*0.5))-1.0;
+    double w=(i.fb->width/((double)ow*0.5));
+    double h=(i.fb->height/((double)oh*0.5));
+    planeTri[index][0]=x;
+    planeTri[index][1]=y;
+    planeTri[index][2]=0.0f;
+    planeTri[index][3]=x+w;
+    planeTri[index][4]=y;
+    planeTri[index][5]=0.0f;
+    planeTri[index][6]=x;
+    planeTri[index][7]=y+h;
+    planeTri[index][8]=0.0f;
+    planeTri[index][9]=x+w;
+    planeTri[index][10]=y+h;
+    planeTri[index][11]=0.0f;
+
+    planeUV[index][0]=0.0f;
+    planeUV[index][1]=0.0f;
+    planeUV[index][2]=1.0f;
+    planeUV[index][3]=0.0f;
+    planeUV[index][4]=0.0f;
+    planeUV[index][5]=1.0f;
+    planeUV[index][6]=1.0f;
+    planeUV[index][7]=1.0f;
+
+    index++;
+  }
+
+  // draw
+  glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
+
+  glViewport(0,0,ow,oh);
+  glClearColor(0.0, 0.0, 0.0, 1.0);
+  glClear(GL_COLOR_BUFFER_BIT);
+
+  glBindBuffer(GL_ARRAY_BUFFER,planeTriBO);
+  glBufferData(GL_ARRAY_BUFFER,sizeof(planeTri)+sizeof(planeUV),planeTri,GL_STATIC_DRAW);
+  glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,0,NULL);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,(void*)sizeof(planeTri));
+  glEnableVertexAttribArray(1);
+
+  // ???
+  int first=0;
+  for (DarmPlane& i: availPlanes) {
+    if (first && !captureCursor) break;
+    glUseProgram(renderProgram);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
+    glUniform1i(renderTexture,0);
+    glDrawArrays(GL_TRIANGLE_STRIP,first,4);
+    first+=4;
+  }
+
+  // debug overlay
+  if (drawDebug) {
+    ImGuiIO& io=ImGui::GetIO();
+    io.DisplaySize=ImVec2(ow,oh);
+    io.DeltaTime=1.0f/60.0f;
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui::NewFrame();
+
+    if (ImGui::Begin("Statistics",NULL,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoMove)) {
+      ImGui::Text("darmstadt " DARM_VERSION);
+      ImGui::Separator();
+
+      ImGui::Text(
+        "%.2ld:%.2ld:%.2ld.%.3ld (%d)\n"
+        "bitrate: %6ldKBit\n"
+        "size: %ldM\n"
+        "A-V: %ldms\n"
+        "frame time: %ldµs\n"
+        "drop: %d\n"
+        "stalls: %d video, %d audio\n"
+        "audio resync: %d",
+        // ARGUMENTS
+        // time
+        vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,frame,
+        // bitrate
+        bitRate>>10,
+        // size
+        totalWritten>>20,
+        // A/V sync
+        (lastATime-sATime).tv_nsec/1000000,
+        // frame time
+        tDelta,
+        // dropped frames
+        recal,
+        // A/V write stalls
+        videoStalls,audioStalls,
+        // audio resync
+        arecal
+      );
+    }
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+  }
+  
+  glFlush();
+
+  // cleanup
+  for (DarmPlane& i: availPlanes) {
+    if (i.texture) {
+      glDeleteTextures(1,&i.texture);
+    }
+    if (i.image!=EGL_NO_IMAGE_KHR) {
+      eglDestroyImageKHR(eglInst,i.image);
+    }
+    close(i.buf);
+    drmModeFreeFB(i.fb);
+    drmModeFreeCrtc(i.crtc);
+    drmModeFreePlane(i.plane);
+  }
+  drmModeFreePlaneResources(planeres);
+
+  return true;
 }
 
 bool needsValue(string param) {
@@ -538,6 +1199,11 @@ bool pHesse(string) {
   return true;
 }
 
+bool pDebug(string) {
+  drawDebug=true;
+  return true;
+}
+
 bool pHelp(string) {
   printf("usage: darmstadt [params] [filename]\n\n"
          "by default darmstadt outputs to %s.\n",outname);
@@ -555,6 +1221,22 @@ bool pHelp(string) {
     }
   }
   return false;
+}
+
+bool pVersion(string) {
+  printf(
+    "darmstadt " DARM_VERSION " - hardware-accelerated screen capture tool.\n"
+    "copyright 2019-2023 tildearrow.\n"
+    "\n"
+    "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.\n"
+    "\n"
+    "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.\n"
+    "\n"
+    "You should have received a copy of the GNU General Public License along with this program.  If not, see <https://www.gnu.org/licenses/>.\n"
+    "-----------------------\n"
+    "uses portions of kmscube <https://gitlab.freedesktop.org/mesa/kmscube/> and Dear ImGui <https://github.com/ocornut/imgui>, both under MIT License."
+  );
+  return false; 
 }
 
 bool hesseBench(string u) {
@@ -720,8 +1402,15 @@ bool pSetVideoScale(string val) {
   return true;
 }
 
-bool pSetCursor(string) {
-  logW("Cursor capture isn't currently implemented yet...\n");
+bool pSetCursor(string val) {
+  if (val=="on") {
+    captureCursor=true;
+  } else if (val=="off") {
+    captureCursor=false;
+  } else {
+    logE("it must be on or off.\n");
+    return false;
+  }
   return true;
 }
 
@@ -790,8 +1479,10 @@ void initParams() {
   // information
   categories.push_back(Category("Information","help"));
   params.push_back(Param("h","help",false,pHelp,"","display this help"));
+  params.push_back(Param("D","debug",false,pDebug,"","overlay debug performance metrics"));
   params.push_back(Param("l","listdevices",false,pListDevices,"","list available devices"));
   params.push_back(Param("L","listdisplays",false,pListDisplays,"","list available displays")); // TODO
+  params.push_back(Param("v","version",false,pVersion,"","display version information"));
   
   // device selection
   categories.push_back(Category("Device selection","device"));
@@ -802,10 +1493,11 @@ void initParams() {
   
   // video options
   categories.push_back(Category("Video options","size"));
-  params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
-  params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
-  params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
-  params.push_back(Param("C","cursor",true,pSetCursor,"auto|on|off","enable/disable X11 cursor overlay (Not Implemented Yet)")); // TODO
+  // TODO: fix these later...
+  //params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
+  //params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
+  //params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
+  params.push_back(Param("C","cursor",true,pSetCursor,"on|off","enable/disable X11 cursor overlay"));
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
   params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));
   params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
@@ -1006,6 +1698,13 @@ int main(int argc, char** argv) {
     logE("i have to tell you... that universal planes can't happen...\n");
     return 1;
   }
+
+  logD("creating GBM device...\n");
+  gbmDevice=gbm_create_device(fd);
+  if (gbmDevice==NULL) {
+    logE("couldn't open GBM device.\n");
+    return 1;
+  }
   
   planeres=drmModeGetPlaneResources(fd);
   if (planeres==NULL) {
@@ -1030,8 +1729,6 @@ int main(int argc, char** argv) {
     }
     
     logD("using plane %d (%d in list) %d, %d.\n",plane->plane_id,i,plane->x,plane->y);
-    planeid=plane->plane_id;
-
     break;
   }
   
@@ -1082,6 +1779,9 @@ int main(int argc, char** argv) {
     }
   }
 
+  logD("initializing EGL.\n");
+  if (!initEGL()) return 1;
+
   if (encName=="") {
     // 2880x1800 = 5.1 megapixels
     if (ow*oh>=5184000) {
@@ -1098,9 +1798,10 @@ int main(int argc, char** argv) {
     }
   }
   
-  if (planeres) drmModeFreePlaneResources(planeres);
-  if (plane) drmModeFreePlane(plane);
   if (fb) drmModeFreeFB(fb);
+  if (plane) drmModeFreePlane(plane);
+  if (planeres) drmModeFreePlaneResources(planeres);
+  
   // DRM INIT END //
   
   // VA-API INIT BEGIN //
@@ -1148,41 +1849,47 @@ int main(int argc, char** argv) {
     return 1;
   }
   
-  coAttr[0].type=VASurfaceAttribUsageHint;
-  coAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
-  coAttr[0].value.type=VAGenericValueTypeInteger;
-  coAttr[0].value.value.i=VA_SURFACE_ATTRIB_USAGE_HINT_GENERIC;
-  
-  logD("creating VA surface...\n");
-  if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,ow,oh,portFrame,1,coAttr,1))!=VA_STATUS_SUCCESS) {
-    logE("could not create surface for encoding... %x\n",vaStat);
-    return 1;
-  }
-  
   logD("creating VA config\n");
-  if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConf)!=VA_STATUS_SUCCESS) {
+  if (vaCreateConfig(vaInst,VAProfileNone,VAEntrypointVideoProc,NULL,0,&vaConfS)!=VA_STATUS_SUCCESS) {
     logE("no videoproc.\n");
     return 1;
   }
 
   logD("creating VA format converter context\n");
-  if (vaCreateContext(vaInst,vaConf,ow,oh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
+  if (vaCreateContext(vaInst,vaConfS,ow,oh,VA_PROGRESSIVE,NULL,0,&scalerC)!=VA_STATUS_SUCCESS) {
     logE("we can't scale...\n");
     return 1;
   }
+
   logD("allocating context for FFmpeg\n");
   wrappedSource=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
+
+  if (wrappedSource==NULL) {
+    logE("failure to\n");
+    return 1;
+  }
+
   extractSource=(AVHWDeviceContext*)wrappedSource->data;
   
   // only do so if not in hesse mode
   if (!hesse) {
+    logD("PRE: %p\n",extractSource);
     logD("creating FFmpeg hardware instance\n");
     if (av_hwdevice_ctx_create_derived(&ffhardInst, AV_HWDEVICE_TYPE_VAAPI, wrappedSource, 0)<0) {
-      logD("check me later\n");
+      logE("check me NOW\n");
+      return 1;
     }
+    extractSource=(AVHWDeviceContext*)ffhardInst->data;
+    logD("POST: %p\n",extractSource);
     ((AVVAAPIDeviceContext*)(extractSource->hwctx))->display=vaInst;
+    ((AVVAAPIDeviceContext*)(extractSource->hwctx))->driver_quirks=0;
     logD("initializing the context\n");
-    av_hwdevice_ctx_init(ffhardInst);
+    if (av_hwdevice_ctx_init(ffhardInst)<0) {
+      logE("aaaaaand it failed.\n");
+      return 1;
+    }
+
+    logD("quirks: %x\n",((AVVAAPIDeviceContext*)(extractSource->hwctx))->driver_quirks);
   } else {
     logD("creating image in memory\n");
   }
@@ -1250,6 +1957,7 @@ int main(int argc, char** argv) {
     ((AVHWFramesContext*)hardFrameDataR->data)->width=ow;
     ((AVHWFramesContext*)hardFrameDataR->data)->height=oh;
     // this was 32 but let's see if 2 fixes hang
+    // what hang? the Mesa 19.1 one?
     ((AVHWFramesContext*)hardFrameDataR->data)->initial_pool_size = 2;
     ((AVHWFramesContext*)hardFrameDataR->data)->format=AV_PIX_FMT_VAAPI;
     ((AVHWFramesContext*)hardFrameDataR->data)->sw_format=AV_PIX_FMT_NV12;
@@ -1340,16 +2048,18 @@ int main(int argc, char** argv) {
   
   /// Audio
   switch (audioType) {
+#ifdef HAVE_JACK
     case audioTypeJACK:
       ae=new JACKAudioEngine;
       break;
+#endif
     case audioTypePulse:
       ae=new PulseAudioEngine;
       break;
     case audioTypeNone:
       break;
     default:
-      logE("this audio type is not implemented yet!\n");
+      logE("this audio type is not available!\n");
       return 1;
       break;
   }
@@ -1382,11 +2092,10 @@ int main(int argc, char** argv) {
     audStream->time_base=(AVRational){1,audEncoder->sample_rate};
     switch (audEncoder->ch_layout.nb_channels) {
       case 1:
-      
         audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_MONO;
         break;
       case 2:
-        audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_STEREO;
+        audEncoder->ch_layout=AV_CHANNEL_LAYOUT_STEREO;
         break;
       case 3:
         audEncoder->ch_layout.u.mask=AV_CH_LAYOUT_2POINT1;
@@ -1458,8 +2167,9 @@ int main(int argc, char** argv) {
     }
     printf("format: %d\n",audFrame->format);
     logD("getting audio buffer...\n");
-    if (av_frame_get_buffer(audFrame,0)<0) {
-      logE("are you being serious?\n");
+    int audErr=av_frame_get_buffer(audFrame,0);
+    if (audErr<0) {
+      logE("are you being serious? %s\n",strerror(-audErr));
       return 1;
     }
   }
@@ -1490,6 +2200,14 @@ int main(int argc, char** argv) {
   }
   // FFMPEG INIT END //
 
+  // CURSOR INIT BEGIN //
+  if (captureCursor) {
+    if (pthread_create(&x11Thread,NULL,x11CursorThread,NULL)!=0) {
+      logW("couldn't create cursor thread!\n");
+    }
+  }
+  // CURSOR INIT END //
+
   sigaction(SIGINT,&saTerm,NULL);
   sigaction(SIGTERM,&saTerm,NULL);
   sigaction(SIGHUP,&saTerm,NULL);
@@ -1503,11 +2221,11 @@ int main(int argc, char** argv) {
   
   printf("\x1b[1m|\x1b[m\n");
   if (meitner) {
-    printf("\x1b[1m|\x1b[0;34m ~~~~> \x1b[1;33mDARMSTADT ~~DUAL-MUX EDITION~~ (meitner mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[0;34m ~~~~> \x1b[1;33mDARMSTADT => EGL <= (meitner mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
   } else if (hesse) {
-    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT ~~DUAL-MUX EDITION~~ (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT => EGL <= (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
   } else {
-    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT ~~DUAL-MUX EDITION~~ \x1b[1;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT => EGL <= \x1b[1;32m" DARM_VERSION "\x1b[m\n");
   }
   if (qp==0) printf("\x1b[1;31m> !!! -> -> LOSSLESS <- <- !!! <\x1b[m\n");
   printf("\x1b[1m|\x1b[m\n");
@@ -1563,9 +2281,6 @@ int main(int argc, char** argv) {
   drmWaitVBlank(fd,&vblank);
   vreply=vblank.reply;
   startSeq=vreply.sequence;
-  int recal=0;
-  int arecal=0;
-  int audioStalls=0;
   
   ioctl(1,TIOCGWINSZ,&winSize);
   if (audioType!=audioTypeNone) ae->start();
@@ -1661,117 +2376,66 @@ int main(int argc, char** argv) {
     if (frame>1 && delta>=0 && delta<120) {
       speeds[delta]++;
     }
+
+    //printf("\x1b[2K\x1b[0;33m%d: time: %ldµs\x1b[m\n",frame,(tEnd-tStart).tv_nsec/1000);
+    tDelta=(tEnd-tStart).tv_nsec/1000;
+
+    // RETRIEVE CODE BEGIN //
     tStart=curTime(CLOCK_MONOTONIC);
-    plane=drmModeGetPlane(fd,planeid);
-    if (plane==NULL) {
-      printf("\x1b[2K\x1b[1;31m%d: the plane no longer exists!\x1b[m\n",frame);
-      quit=true;
-      break;
+
+    intptr_t boFD=gbm_bo_get_fd(compoBo);
+    if (boFD<0) {
+      logE("could not fuck the BO\n");
+      return 1;
     }
-    if (!plane->fb_id) {
-      printf("\x1b[2K\x1b[1;31m%d: the plane doesn't have a framebuffer!\x1b[m\n",frame);
-      quit=true;
-      break;
-    }
-    fb=drmModeGetFB(fd,plane->fb_id);
-    if (fb==NULL) {
-      printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
-      quit=true;
-      break;
-    }
-    if (!fb->handle) {
-      printf("\x1b[2K\x1b[1;31m%d: the framebuffer has invalid handle!\x1b[m\n",frame);
-      quit=true;
-      break;
-    }
-    if (oldHandle==fb->handle && !hesse) {
-      printf("\x1b[2K\x1b[1;33m%d: repeated handles! may cause stutter!\x1b[m\n",frame);
-      repeatCount++;
-    }
-    oldHandle=fb->handle;
+
+    vaCompoBD.buffers=(uintptr_t*)&boFD;
+    vaCompoBD.pixel_format=VA_FOURCC_BGRX;
+    vaCompoBD.width=ow;
+    vaCompoBD.height=oh;
+    vaCompoBD.data_size=ow*oh*4;
+    vaCompoBD.num_buffers=1;
+    vaCompoBD.flags=VA_SURFACE_EXTBUF_DESC_PROTECTED;
+    vaCompoBD.pitches[0]=ow*4;
+    vaCompoBD.offsets[0]=0;
+    vaCompoBD.num_planes=1;
     
-    // resolution change support
-    if (!hesse) {
-      dw=fb->width;
-      dh=fb->height;
+    coAttr[0].type=VASurfaceAttribMemoryType;
+    coAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
+    coAttr[0].value.type=VAGenericValueTypeInteger;
+    coAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    coAttr[1].type=VASurfaceAttribExternalBufferDescriptor;
+    coAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
+    coAttr[1].value.type=VAGenericValueTypePointer;
+    coAttr[1].value.value.p=&vaCompoBD;
+
+    if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&portFrame,1,coAttr,3))!=VA_STATUS_SUCCESS) {
+      logE("could not create surface for compositing... %x\n",vaStat);
+      return 1;
     }
-    
-    if (drmPrimeHandleToFD(fd,fb->handle,O_RDONLY,&primefd)<0) {
-      printf("\x1b[2K\x1b[1;31m%d: unable to prepare frame for the encoder!\x1b[m\n",frame);
-      quit=true;
-      break;
+
+    if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
+      logE("no surface sync %x\n",vaStat);
     }
+
+    if (!composeFrameEGL()) {
+      logE("couldn't compose frame.\n");
+      return 1;
+    }
+
+    //printf("\x1b[2K\x1b[1;32m%d: preparing frame...\x1b[m\n",frame);
     
     dsScanOff[dsScanOffPos++]=(wtEnd-wtStart).tv_nsec;
     dsScanOffPos&=1023;
     //makeGraph(0,2,40,12,true,dsScanOff,1024,dsScanOffPos-40);
-    
-    // RETRIEVE CODE BEGIN //
-    portedFD=primefd;
-    vaBD.buffers=&portedFD;
-    vaBD.pixel_format=VA_FOURCC_BGRX;
-    vaBD.width=dw;
-    vaBD.height=dh;
-    vaBD.data_size=fb->pitch*fb->height;
-    vaBD.num_buffers=1;
-    vaBD.flags=0;
-    vaBD.pitches[0]=fb->pitch;
-    vaBD.offsets[0]=0;
-    vaBD.num_planes=1;
-    
-    vaAttr[0].type=VASurfaceAttribMemoryType;
-    vaAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
-    vaAttr[0].value.type=VAGenericValueTypeInteger;
-    vaAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
-    vaAttr[1].type=VASurfaceAttribExternalBufferDescriptor;
-    vaAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
-    vaAttr[1].value.type=VAGenericValueTypePointer;
-    vaAttr[1].value.value.p=&vaBD;
-    
-    if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&surface,1,vaAttr,2))!=VA_STATUS_SUCCESS) {
-      printf("could not create surface... %x\n",vaStat);
-    } else {
-      if ((vaStat=vaSyncSurface(vaInst,surface))!=VA_STATUS_SUCCESS) {
-        printf("no surface sync %x\n",vaStat);
-      }
 
-    switch (sm) {
-      case scaleFill:
-        scaleRegion.x=0;
-        scaleRegion.y=0;
-        scaleRegion.width=ow;
-        scaleRegion.height=oh;
-        break;
-      case scaleFit:
-        if (((dw*oh)/dh)<ow) {
-          scaleRegion.x=0;//((dw*oh)/dh-ow)/2;
-          scaleRegion.y=0;
-          scaleRegion.width=(dw*oh)/dh;
-          scaleRegion.height=oh;
-        } else {
-          scaleRegion.x=0;
-          scaleRegion.y=((dh*ow)/dw-oh)/2;
-          scaleRegion.width=ow;
-          scaleRegion.height=(dh*ow)/dw;
-        }
-        break;
-      case scaleOrig:
-        scaleRegion.x=(ow-dw)/2;
-        scaleRegion.y=(oh-dh)/2;
-        scaleRegion.width=dw;
-        scaleRegion.height=dh;
-        break;
-    }
+    scaleRegion.x=0;
+    scaleRegion.y=0;
+    scaleRegion.width=ow;
+    scaleRegion.height=oh;
 
-    if (doCrop) {
-      cropRegion.x=cx;
-      cropRegion.y=cy;
-      cropRegion.width=cw;
-      cropRegion.height=ch;
-    }
-  
-    scaler.surface=surface;
-    scaler.surface_region=(doCrop)?(&cropRegion):0;
+    scaler.surface=portFrame;
+    scaler.surface_region=NULL;
     scaler.surface_color_standard=VAProcColorStandardBT709;
     scaler.output_region=&scaleRegion;
     scaler.output_background_color=0xff000000;
@@ -1785,14 +2449,14 @@ int main(int argc, char** argv) {
       hardFrame->pkt_dts=hardFrame->pts;
 
       // how come this fails? we need to rescale!
-      if ((vaStat=vaGetImage(vaInst,surface,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
-        logW("couldn't get image!\n");
+      if ((vaStat=vaGetImage(vaInst,portFrame,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+        logW("couldn't get image! %x\n",vaStat);
       }
       if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
         logW("oh come on! %x\n",vaStat);
       }
       hardFrame->data[0]=addr;
-      encode_write(encoder,hardFrame,out,stream);
+      writeFrame(encoder,hardFrame,out,stream);
       if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
         logE("could not unmap buffer: %x...\n",vaStat);
       }
@@ -1805,7 +2469,6 @@ int main(int argc, char** argv) {
   
       // convert
       massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
-      
   
       if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[1]))!=VA_STATUS_SUCCESS) {
         printf("vaBeginPicture fail: %x\n",vaStat);
@@ -1828,21 +2491,20 @@ int main(int argc, char** argv) {
         return 1;
       }
       
-      encode_write(encoder,hardFrame,out,stream);
+      writeFrame(encoder,hardFrame,out,stream);
       // VA-API ENCODE SINGLE-THREAD CODE END //
     }
     //av_frame_free(&hardFrame);
-    
 
-      if ((vaStat=vaDestroySurfaces(vaInst,&surface,1))!=VA_STATUS_SUCCESS) {
-        printf("destroy surf error %x\n",vaStat);
-      }
+    if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
+      printf("no surface sync %x\n",vaStat);
     }
+    if ((vaStat=vaDestroySurfaces(vaInst,&portFrame,1))!=VA_STATUS_SUCCESS) {
+      logE("destroy portframes error %x\n",vaStat);
+      return 1;
+    }
+    close(boFD);
     // RETRIEVE CODE END //
-    
-    close(primefd);
-    drmModeFreeFB(fb);
-    drmModeFreePlane(plane);
     
     // AUDIO CODE BEGIN //
     if (audioType!=audioTypeNone) {
@@ -1949,12 +2611,7 @@ int main(int argc, char** argv) {
     }
     // AUDIO CODE END //
     
-    // HACK: force flush
-    //av_write_frame(out,NULL);
-    
-    //frames.push(qFrame(primefd,fb->height,fb->pitch,vtime,fb,plane));
     tEnd=curTime(CLOCK_MONOTONIC);
-    //printf("%s\n",tstos(tEnd-tStart).c_str());
 
     if (!noSignal) {
       frame++;
@@ -1981,10 +2638,7 @@ int main(int argc, char** argv) {
 
   avcodec_free_context(&encoder);
   vaDestroyContext(vaInst,scalerC);
-  vaDestroyContext(vaInst,copierC);
-  if ((vaStat=vaDestroySurfaces(vaInst,portFrame,1))!=VA_STATUS_SUCCESS) {
-    logE("destroy portframes error %x\n",vaStat);
-  }
+  //vaDestroyContext(vaInst,copierC);
   vaTerminate(vaInst);
 
   close(fd);
