@@ -1315,7 +1315,7 @@ bool pSetVideoScale(string val) {
   return true;
 }
 
-bool pSetCursor(string) {
+bool pSetCursor(string val) {
   if (val=="on") {
     captureCursor=true;
   } else if (val=="off") {
