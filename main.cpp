@@ -6,6 +6,7 @@
 #include <X11/Xlib.h>
 #include <X11/extensions/Xfixes.h>
 #include <atomic>
+#include <mutex>
 #include "imgui.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
 
@@ -111,6 +112,7 @@ GLuint planeTriBO;
 GLint renderTexture;
 int compoWrite=0;
 int compoRead=0;
+long frameTime[64];
 
 // X11 CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
 pthread_t x11Thread;
@@ -208,17 +210,6 @@ const char* renderFragment=
   "  gl_FragColor=texture2D(uTexture,vTexCoord);\n"
   "}\n";
 
-/*
-const char* renderFragment=
-  "precision mediump float;\n"
-  "uniform sampler2D uTexture;\n"
-  "varying vec2 vTexCoord;\n"
-  "\n"
-  "void main() {\n"
-  "  gl_FragColor=vec4(vTexCoord.x,vTexCoord.y,0.0,1.0);\n"
-  "}\n";
-  */
-
 // stuff
 int writeToCache(void*, unsigned char* buf, int size) {
   bitRatePre+=size;
@@ -240,43 +231,38 @@ int64_t seekCache(void*, int64_t off, int whence) {
   return 0;
 }
 
-static int writeFrame(AVCodecContext *avctx, AVFrame *frame, AVFormatContext *fout, AVStream* str)
-{
-    int ret = 0;
-    AVPacket* enc_pkt=av_packet_alloc();
-    if (enc_pkt==NULL) {
-      logW("couldn't allocate packet!\n");
-      return -1;
+static int writeFrame(AVCodecContext* avctx, AVFrame* frame, AVFormatContext* fout, AVStream* str) {
+  int ret=0;
+  AVPacket* enc_pkt=av_packet_alloc();
+  if (enc_pkt==NULL) {
+    logW("couldn't allocate packet!\n");
+    return -1;
+  }
+  if ((ret=avcodec_send_frame(avctx,frame))<0) {
+    logW("couldn't write frame! %s\n",strerror(-ret));
+    goto end;
+  }
+  while (true) {
+    ret=avcodec_receive_packet(avctx,enc_pkt);
+    if (ret) break;
+    enc_pkt->stream_index=str->index;
+    av_packet_rescale_ts(enc_pkt,tb,str->time_base);
+
+    wtStart=curTime(CLOCK_MONOTONIC);
+    if (av_write_frame(fout,enc_pkt)<0) {
+      logE("unable to write frame!!!!\n");
     }
-    if ((ret = avcodec_send_frame(avctx, frame)) < 0) {
-        logW("couldn't write frame! %s\n",strerror(-ret));
-        goto end;
+    avio_flush(fout->pb);
+    wtEnd=curTime(CLOCK_MONOTONIC);
+    if ((wtEnd-wtStart)>mkts(0,16666667)) {
+      printf("\x1b[1;32mWARNING! write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+      videoStalls++;
     }
-    while (1) {
-        ret = avcodec_receive_packet(avctx, enc_pkt);
-        if (ret)
-            break;
-        enc_pkt->stream_index = str->index;
-        //enc_pkt->duration=0;
-        //enc_pkt->dts = frame->pts;
-        av_packet_rescale_ts(enc_pkt,tb,str->time_base);
-        // what was this again?
-        //str->cur_dts = enc_pkt->pts-1;
-        wtStart=curTime(CLOCK_MONOTONIC);
-        if (av_write_frame(fout,enc_pkt)<0) {
-          logE("unable to write frame!!!!\n");
-        }
-        avio_flush(fout->pb);
-        wtEnd=curTime(CLOCK_MONOTONIC);
-        if ((wtEnd-wtStart)>mkts(0,16666667)) {
-          printf("\x1b[1;32mWARNING! write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
-          videoStalls++;
-        }
-    }
+  }
 end:
-    av_packet_free(&enc_pkt);
-    ret = ((ret == AVERROR(EAGAIN)) ? 0 : -1);
-    return ret;
+  av_packet_free(&enc_pkt);
+  ret=((ret==AVERROR(EAGAIN))?0:-1);
+  return ret;
 }
 
 void* x11CursorThread(void*) {
@@ -679,8 +665,6 @@ bool composeFrameEGL() {
       continue;
     }
 
-    //printf("\x1b[2K\x1b[1;32m%d: composing FB %d...\x1b[m\n",frame,plane->fb_id);
-    
     fb=drmModeGetFB(fd,plane->fb_id);
     if (fb==NULL) {
       printf("\x1b[2K\x1b[1;31m%d: the framebuffer no longer exists!\x1b[m\n",frame);
@@ -714,7 +698,6 @@ bool composeFrameEGL() {
 
   // create textures
   for (DarmPlane& i: availPlanes) {
-    //logD("- %d\n",i.fb->fb_id);
     EGLint imageAttr[]={
       EGL_WIDTH, (int)i.fb->width,
       EGL_HEIGHT, (int)i.fb->height,
@@ -732,7 +715,6 @@ bool composeFrameEGL() {
     }
     // supposedly close goes here, but no thanks.
 
-    //logD("create output texture...\n");
     glGenTextures(1,&i.texture);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
@@ -746,7 +728,6 @@ bool composeFrameEGL() {
   unsigned int curPos=cursorPos;
   short cursorX=curPos>>16;
   short cursorY=curPos&0xffff;
-  //logD("cursor pos: %d, %d\n",cursorX,cursorY);
 
   // prepare positions
   int index=0;
