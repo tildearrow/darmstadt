@@ -6,6 +6,8 @@
 #include <X11/Xlib.h>
 #include <X11/extensions/Xfixes.h>
 #include <atomic>
+#include "imgui.h"
+#include "imgui/backends/imgui_impl_opengl3.h"
 
 PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
 PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
@@ -37,6 +39,9 @@ int frame;
 int framerate;
 struct timespec btime, vtime, dtime, lastATime, sATime;
 
+int recal=0;
+int arecal=0;
+int audioStalls=0;
 int videoStalls=0;
 
 struct timespec wtStart, wtEnd;
@@ -46,6 +51,7 @@ int dw, dh, ow, oh;
 int cx, cy, cw, ch;
 bool doCrop=false;
 bool captureCursor=true;
+bool drawDebug=false;
 ScaleMethod sm;
 
 // VA-API //
@@ -74,6 +80,7 @@ int discvar1, discvar2;
 unsigned char* addr;
 unsigned long portedFD;
 struct timespec tStart, tEnd;
+long tDelta;
 
 // COMPOSITOR - VA //
 VASurfaceAttribExternalBuffers vaCompoBD;
@@ -589,6 +596,18 @@ bool initEGL() {
 
   glGenBuffers(1,&planeTriBO);
 
+  // initialize ImGui
+  if (drawDebug) {
+    logD("initialize ImGui...\n");
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui_ImplOpenGL3_Init();
+
+    ImGui::GetIO().FontGlobalScale=2.0;
+    ImGui::GetStyle().ScaleAllSizes(2.0);
+  }
+
   logD("complete!\n");
   return true;
 }
@@ -754,7 +773,8 @@ bool composeFrameEGL() {
   // draw
   glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
 
-  glClearColor(0.35, 0.5, 0.75, 1.0);
+  glViewport(0,0,ow,oh);
+  glClearColor(0.0, 0.0, 0.0, 1.0);
   glClear(GL_COLOR_BUFFER_BIT);
 
   glBindBuffer(GL_ARRAY_BUFFER,planeTriBO);
@@ -774,6 +794,52 @@ bool composeFrameEGL() {
     glUniform1i(renderTexture,0);
     glDrawArrays(GL_TRIANGLE_STRIP,first,4);
     first+=4;
+  }
+
+  // debug overlay
+  if (drawDebug) {
+    ImGuiIO& io=ImGui::GetIO();
+    io.DisplaySize=ImVec2(ow,oh);
+    io.DeltaTime=1.0f/60.0f;
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui::NewFrame();
+
+    if (ImGui::Begin("Statistics",NULL,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoMove)) {
+      ImGui::Text("darmstadt " DARM_VERSION);
+      ImGui::Separator();
+
+      ImGui::Text(
+        "%.2ld:%.2ld:%.2ld.%.3ld (%d)\n"
+        "bitrate: %6ldKBit\n"
+        "size: %ldM\n"
+        "A-V: %ldms\n"
+        "frame time: %ldµs\n"
+        "drop: %d\n"
+        "stalls: %d video, %d audio\n"
+        "audio resync: %d",
+        // ARGUMENTS
+        // time
+        vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,frame,
+        // bitrate
+        bitRate>>10,
+        // size
+        totalWritten>>20,
+        // A/V sync
+        (lastATime-sATime).tv_nsec/1000000,
+        // frame time
+        tDelta,
+        // dropped frames
+        recal,
+        // A/V write stalls
+        videoStalls,audioStalls,
+        // audio resync
+        arecal
+      );
+    }
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
   }
   
   glFlush();
@@ -1133,6 +1199,11 @@ bool pHesse(string) {
   return true;
 }
 
+bool pDebug(string) {
+  drawDebug=true;
+  return true;
+}
+
 bool pHelp(string) {
   printf("usage: darmstadt [params] [filename]\n\n"
          "by default darmstadt outputs to %s.\n",outname);
@@ -1392,6 +1463,7 @@ void initParams() {
   // information
   categories.push_back(Category("Information","help"));
   params.push_back(Param("h","help",false,pHelp,"","display this help"));
+  params.push_back(Param("D","debug",false,pDebug,"","overlay debug performance metrics"));
   params.push_back(Param("l","listdevices",false,pListDevices,"","list available devices"));
   params.push_back(Param("L","listdisplays",false,pListDisplays,"","list available displays")); // TODO
   
@@ -2191,9 +2263,6 @@ int main(int argc, char** argv) {
   drmWaitVBlank(fd,&vblank);
   vreply=vblank.reply;
   startSeq=vreply.sequence;
-  int recal=0;
-  int arecal=0;
-  int audioStalls=0;
   
   ioctl(1,TIOCGWINSZ,&winSize);
   if (audioType!=audioTypeNone) ae->start();
@@ -2291,6 +2360,7 @@ int main(int argc, char** argv) {
     }
 
     //printf("\x1b[2K\x1b[0;33m%d: time: %ldµs\x1b[m\n",frame,(tEnd-tStart).tv_nsec/1000);
+    tDelta=(tEnd-tStart).tv_nsec/1000;
 
     // RETRIEVE CODE BEGIN //
     tStart=curTime(CLOCK_MONOTONIC);
