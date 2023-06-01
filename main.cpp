@@ -1234,7 +1234,7 @@ bool pVersion(string) {
     "\n"
     "You should have received a copy of the GNU General Public License along with this program.  If not, see <https://www.gnu.org/licenses/>.\n"
     "-----------------------\n"
-    "uses portions of kmscube <https://gitlab.freedesktop.org/mesa/kmscube/> and Dear ImGui <https://github.com/ocornut/imgui>, both under MIT License."
+    "uses portions of kmscube <https://gitlab.freedesktop.org/mesa/kmscube/> and Dear ImGui <https://github.com/ocornut/imgui>, both under MIT License.\n"
   );
   return false; 
 }
