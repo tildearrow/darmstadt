@@ -1223,6 +1223,22 @@ bool pHelp(string) {
   return false;
 }
 
+bool pVersion(string) {
+  printf(
+    "darmstadt " DARM_VERSION " - hardware-accelerated screen capture tool.\n"
+    "copyright 2019-2023 tildearrow.\n"
+    "\n"
+    "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.\n"
+    "\n"
+    "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.\n"
+    "\n"
+    "You should have received a copy of the GNU General Public License along with this program.  If not, see <https://www.gnu.org/licenses/>.\n"
+    "-----------------------\n"
+    "uses portions of kmscube <https://gitlab.freedesktop.org/mesa/kmscube/> and Dear ImGui <https://github.com/ocornut/imgui>, both under MIT License."
+  );
+  return false; 
+}
+
 bool hesseBench(string u) {
   char* image[3];
   int size;
@@ -1466,6 +1482,7 @@ void initParams() {
   params.push_back(Param("D","debug",false,pDebug,"","overlay debug performance metrics"));
   params.push_back(Param("l","listdevices",false,pListDevices,"","list available devices"));
   params.push_back(Param("L","listdisplays",false,pListDisplays,"","list available displays")); // TODO
+  params.push_back(Param("v","version",false,pVersion,"","display version information"));
   
   // device selection
   categories.push_back(Category("Device selection","device"));
@@ -1476,9 +1493,10 @@ void initParams() {
   
   // video options
   categories.push_back(Category("Video options","size"));
-  params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
-  params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
-  params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
+  // TODO: fix these later...
+  //params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
+  //params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
+  //params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
   params.push_back(Param("C","cursor",true,pSetCursor,"on|off","enable/disable X11 cursor overlay"));
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
   params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));

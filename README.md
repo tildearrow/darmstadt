@@ -1,35 +1,32 @@
-# NOTE
-
-FFmpeg 4.3 totally breaks darmstadt using an AMD card.
-
 # darmstadt
 
 this is an experimental Linux full-hardware screen recorder for AMD and Intel cards.
 
-the purpose of this program is to alleviate some issues with FFmpeg when trying to record using kmsgrab and the hardware encoder (such as stutter). somebody finally [reported](https://trac.ffmpeg.org/ticket/8377) the issue ~9 months after this project's initial private release.
+the purpose of this program is to alleviate some issues with FFmpeg when trying to record using kmsgrab and the hardware encoder (such as stutter and lack of cursor). somebody finally [reported](https://trac.ffmpeg.org/ticket/8377) the issue ~9 months after this project's initial private release.
 
 ## features
 
-- uses DRM/KMS and VA-API
+- uses DRM/KMS, EGL and VA-API
 - very low CPU overhead
 - stutter-free if your card is fast enough
 - synchronizes with your display, even if you were to change the refresh rate
 - records audio as well (JACK and PulseAudio supported)
-- optionally allows you to encode in software using Meitner mode
+- optionally allows you to encode with an NVIDIA card using darmstadt's Hesse mode
+- optionally allows you to encode in software using darmstadt's Meitner mode
 
 # warning
 
 **recording at 1080p in AMD cards outputs at 1920x1088 for some weird reason. I will fix this.**
 
-no, this is not complete yet or tested on an environment that is not my Vega FE. sorry.
+**it is best you record in .nut format. .mkv may work, but as of FFmpeg 4.3, it apparently does not.**
+
+works on my machine...
 maybe it can work on your setup, but is very doubtful. if it does however, please tell me.
 
-no, this won't work on NVIDIA either, of course. wait for röntgen-mode and maybe you get a chance (but I doubt because NVIDIA is so greedy with their NVFBC restrictions).
+might work on Intel, but I don't know.
+
+this won't work on NVIDIA, of course. wait for röntgen-mode and maybe you get a chance (but I doubt because NVIDIA is so greedy with their NVFBC restrictions).
 however you can use NVIDIA for encoding the AMD/Intel capture in hesse mode. see [hesse.md](hesse.md) for more information.
-
-the real reason why I made this public is because of a bug report I'm making in the Phoronix forums since my card began to hang again and I swear I hate it because I do not tolerate having to reboot the system whenever it doesn't feel like working. it takes like 2 minutes to start up plus I lose all my work on open applications.
-
-you know what? I may end up switching to Intel's Xe whenever it comes out as people claim Intel is more stable in this regard... (plus they'll do 4:4:4 goodness in Ice Lake... AMD come on step up your encoding game)
 
 # warning 2
 
