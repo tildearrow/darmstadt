@@ -1066,7 +1066,6 @@ bool pSetDevice(string u) {
     return false;
   }
   if (devImportance(autoDevice)==-9001) {
-    logE("seriously? did you think that would work?\n");
     logE("NVIDIA is supported in encode-only mode (-hesse).\n");
     return false;
   }
@@ -1081,7 +1080,6 @@ bool pSetVendor(string v) {
   } else if (v=="AMD") {
     findID=2;
   } else if (v=="NVIDIA") {
-    logE("seriously? did you think that would work?\n");
     logE("NVIDIA is supported in encode-only mode (-hesse).\n");
     return false;
   } else if (v=="Other") {
@@ -1115,7 +1113,6 @@ bool pSetBusID(string val) {
   }
   
   if (devImportance(autoDevice)==-9001) {
-    logE("seriously? did you think that would work?\n");
     logE("NVIDIA is supported in encode-only mode (-hesse).\n");
     return false;
   }
