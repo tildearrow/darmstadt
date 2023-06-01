@@ -49,6 +49,7 @@ struct timespec wtStart, wtEnd;
 // CONFIG //
 int dw, dh, ow, oh;
 int cx, cy, cw, ch;
+int frameQueueSize=8;
 bool doCrop=false;
 bool captureCursor=true;
 bool drawDebug=false;
@@ -96,10 +97,10 @@ VARectangle copyRegion;
 EGLDisplay eglInst;
 EGLConfig eglConf;
 EGLContext eglContext;
-EGLImageKHR eglOut;
-GLuint compoTex;
-GLuint compoFB;
-gbm_bo* compoBo;
+EGLImageKHR eglOut[64];
+GLuint compoTex[64];
+GLuint compoFB[64];
+gbm_bo* compoBo[64];
 const char* eglExtsBase=NULL;
 const char* eglExtsInst=NULL;
 const char* glExts=NULL;
@@ -108,6 +109,8 @@ GLfloat planeTri[16][12];
 GLfloat planeUV[16][8];
 GLuint planeTriBO;
 GLint renderTexture;
+int compoWrite=0;
+int compoRead=0;
 
 // X11 CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
 pthread_t x11Thread;
@@ -351,11 +354,13 @@ bool initEGL() {
   // init output buffer
   unsigned int boFormat=GBM_FORMAT_ARGB8888;
 
-  logD("creating GBM buffer...\n");
-  compoBo=gbm_bo_create(gbmDevice,ow,oh,boFormat,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
-  if (compoBo==NULL) {
-    logE("couldn't make GBM buffer.\n");
-    return false;
+  logD("creating GBM buffers...\n");
+  for (int i=0; i<frameQueueSize; i++) {
+    compoBo[i]=gbm_bo_create(gbmDevice,ow,oh,boFormat,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
+    if (compoBo==NULL) {
+      logE("couldn't make GBM buffer for frame %d.\n",i);
+      return false;
+    }
   }
 
   // check availability of GBM platform
@@ -509,50 +514,56 @@ bool initEGL() {
   REQUIRE_GL_PROC_DEFAULT(glExts,"GL_OES_EGL_image",glEGLImageTargetTexture2DOES);
 
   // create output buffer
-  logD("create output buffer...\n");
-  int boFD=gbm_bo_get_fd(compoBo);
-  if (boFD<0) {
-    logE("couldn't get FD of compositor BO.\n");
-    return false;
-  }
+  logD("create output buffers...\n");
+  for (int i=0; i<frameQueueSize; i++) {
+    int boFD=gbm_bo_get_fd(compoBo[i]);
+    if (boFD<0) {
+      logE("couldn't get FD of compositor BO %d.\n",i);
+      return false;
+    }
 
-  EGLint imageAttr[]={
-    EGL_WIDTH, (int)gbm_bo_get_width(compoBo),
-    EGL_HEIGHT, (int)gbm_bo_get_height(compoBo),
-    EGL_LINUX_DRM_FOURCC_EXT, (int)gbm_bo_get_format(compoBo),
-    EGL_DMA_BUF_PLANE0_FD_EXT, boFD,
-    EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-    EGL_DMA_BUF_PLANE0_PITCH_EXT, (int)gbm_bo_get_stride(compoBo),
-    EGL_NONE,
-  };
+    EGLint imageAttr[]={
+      EGL_WIDTH, (int)gbm_bo_get_width(compoBo[i]),
+      EGL_HEIGHT, (int)gbm_bo_get_height(compoBo[i]),
+      EGL_LINUX_DRM_FOURCC_EXT, (int)gbm_bo_get_format(compoBo[i]),
+      EGL_DMA_BUF_PLANE0_FD_EXT, boFD,
+      EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+      EGL_DMA_BUF_PLANE0_PITCH_EXT, (int)gbm_bo_get_stride(compoBo[i]),
+      EGL_NONE,
+    };
 
-  eglOut=eglCreateImageKHR(eglInst,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,imageAttr);
-  if (eglOut==EGL_NO_IMAGE_KHR) {
-    logE("couldn't create image.\n");
-    return false;
+    eglOut[i]=eglCreateImageKHR(eglInst,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,imageAttr);
+    if (eglOut[i]==EGL_NO_IMAGE_KHR) {
+      logE("couldn't create image.\n");
+      return false;
+    }
+    // I wonder why. we WILL need this later.
+    close(boFD);
   }
-  // I wonder why. we WILL need this later.
-  close(boFD);
 
   logD("create output texture...\n");
-  glGenTextures(1,&compoTex);
-  glBindTexture(GL_TEXTURE_2D,compoTex);
-  glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,eglOut);
-  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+  glGenTextures(frameQueueSize,compoTex);
+  for (int i=0; i<frameQueueSize; i++) {
+    glBindTexture(GL_TEXTURE_2D,compoTex[i]);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,eglOut[i]);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+  }
   glBindTexture(GL_TEXTURE_2D,0);
 
-  glGenFramebuffers(1,&compoFB);
-  glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
-  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,compoTex,0);
+  glGenFramebuffers(frameQueueSize,compoFB);
+  for (int i=0; i<frameQueueSize; i++) {
+    glBindFramebuffer(GL_FRAMEBUFFER,compoFB[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,compoTex[i],0);
 
-  if (glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) {
-    logE("framebuffer isn't complete.\n");
-    glDeleteFramebuffers(1,&compoFB);
-    glDeleteTextures(1,&compoTex);
-    return false;
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) {
+      logE("framebuffer %d isn't complete.\n",i);
+      glDeleteFramebuffers(frameQueueSize,compoFB);
+      glDeleteTextures(frameQueueSize,compoTex);
+      return false;
+    }
   }
 
   // initialize OpenGL (TODO: error checks)
@@ -771,7 +782,7 @@ bool composeFrameEGL() {
   }
 
   // draw
-  glBindFramebuffer(GL_FRAMEBUFFER,compoFB);
+  glBindFramebuffer(GL_FRAMEBUFFER,compoFB[compoWrite]);
 
   glViewport(0,0,ow,oh);
   glClearColor(0.0, 0.0, 0.0, 1.0);
@@ -858,6 +869,8 @@ bool composeFrameEGL() {
     drmModeFreePlane(i.plane);
   }
   drmModeFreePlaneResources(planeres);
+
+  if (++compoWrite>=frameQueueSize) compoWrite=0;
 
   return true;
 }
@@ -2383,7 +2396,18 @@ int main(int argc, char** argv) {
     // RETRIEVE CODE BEGIN //
     tStart=curTime(CLOCK_MONOTONIC);
 
-    intptr_t boFD=gbm_bo_get_fd(compoBo);
+    if (!composeFrameEGL()) {
+      logE("couldn't compose frame.\n");
+      return 1;
+    }
+
+    //printf("\x1b[2K\x1b[1;32m%d: preparing frame...\x1b[m\n",frame);
+    
+    dsScanOff[dsScanOffPos++]=(wtEnd-wtStart).tv_nsec;
+    dsScanOffPos&=1023;
+    //makeGraph(0,2,40,12,true,dsScanOff,1024,dsScanOffPos-40);
+
+    intptr_t boFD=gbm_bo_get_fd(compoBo[0]);
     if (boFD<0) {
       logE("could not fuck the BO\n");
       return 1;
@@ -2418,16 +2442,6 @@ int main(int argc, char** argv) {
       logE("no surface sync %x\n",vaStat);
     }
 
-    if (!composeFrameEGL()) {
-      logE("couldn't compose frame.\n");
-      return 1;
-    }
-
-    //printf("\x1b[2K\x1b[1;32m%d: preparing frame...\x1b[m\n",frame);
-    
-    dsScanOff[dsScanOffPos++]=(wtEnd-wtStart).tv_nsec;
-    dsScanOffPos&=1023;
-    //makeGraph(0,2,40,12,true,dsScanOff,1024,dsScanOffPos-40);
 
     scaleRegion.x=0;
     scaleRegion.y=0;

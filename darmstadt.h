@@ -89,17 +89,6 @@ enum AudioType {
   audioTypeALSA
 };
 
-struct qFrame {
-  long fd;
-  unsigned int format, pitch;
-  size_t objsize;
-  struct timespec ts;
-  drmModeFB* fb;
-  drmModePlane* plane;
-  qFrame(int a, unsigned int b, unsigned int c, struct timespec d, drmModeFBPtr f, drmModePlanePtr pla): fd(a), pitch(c), objsize(b*c), ts(d), fb(f), plane(pla) {}
-  qFrame(): fd(-1), pitch(0), objsize(0), ts(mkts(0,0)), fb(NULL), plane(NULL) {}
-};
-
 enum Vendor {
   VendorIntel=0,
   VendorAMD,
