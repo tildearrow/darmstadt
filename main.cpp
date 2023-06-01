@@ -22,7 +22,7 @@ PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID;
 bool quit, newSize;
 
 // HARDWARE //
-int fd, primefd, renderfd;
+int fd, encodefd;
 
 drmModePlaneRes* planeres;
 drmModePlane* plane;
@@ -656,6 +656,8 @@ bool composeFrameEGL() {
   }
 
   for (unsigned int i=0; i<planeres->count_planes; i++) {
+    int primefd=-1;
+
     plane=drmModeGetPlane(fd,planeres->planes[i]);
     if (plane==NULL) {
       //logD("skipping plane %d...\n",planeres->planes[i]);
@@ -1690,13 +1692,10 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // Intel devices require special treatment
-  if (devImportance(autoDevice)==1) {
-    renderfd=open(devices[autoDevice]->nodes[DRM_NODE_RENDER],O_RDWR);
-    if (renderfd<0) {
-      perror("couldn't open render");
-      return 1;
-    }
+  encodefd=open(devices[autoDevice]->nodes[DRM_NODE_RENDER],O_RDWR);
+  if (encodefd<0) {
+    perror("couldn't open card... again");
+    return 1;
   }
   
   ver=drmGetVersion(fd);
@@ -1819,11 +1818,7 @@ int main(int argc, char** argv) {
   
   // VA-API INIT BEGIN //
   logD("getting VA display\n");
-  if (devImportance(autoDevice)==1) {
-    vaInst=vaGetDisplayDRM(renderfd);
-  } else {
-    vaInst=vaGetDisplayDRM(fd);
-  }
+  vaInst=vaGetDisplayDRM(encodefd);
   if (!vaDisplayIsValid(vaInst)) {
     logE("could not open VA-API...\n");
     return 1;
@@ -2655,6 +2650,7 @@ int main(int argc, char** argv) {
   //vaDestroyContext(vaInst,copierC);
   vaTerminate(vaInst);
 
+  close(encodefd);
   close(fd);
   
   logI("finished.\n");
