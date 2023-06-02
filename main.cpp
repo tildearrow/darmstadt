@@ -476,7 +476,7 @@ void* encodeThread(void*) {
             av_packet_rescale_ts(audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
             //audStream->cur_dts=audPacket->pts-1024;
             //printf("tb: %d/%d dts: %ld\n",audStream->time_base.num,audStream->time_base.den,audStream->cur_dts);
-            if (av_write_frame(out,audPacket)<0) {
+            if (av_interleaved_write_frame(out,audPacket)<0) {
               printf("unable to write frame ATTENTION\n");
             }
             audFrame->pts+=1024;
@@ -849,6 +849,22 @@ bool initEGL() {
   }
 
   logD("complete!\n");
+  return true;
+}
+
+bool quitEGL() {
+  glDeleteBuffers(1,&planeTriBO);
+  glDeleteProgram(renderProgram);
+  glDeleteShader(renderFragmentS);
+  glDeleteShader(renderVertexS);
+  glDeleteFramebuffers(frameQueueSize,compoFB);
+  glDeleteTextures(frameQueueSize,compoTex);
+  for (int i=0; i<frameQueueSize; i++) {
+    eglDestroyImageKHR(eglInst,eglOut[i]);
+  }
+  eglDestroyContext(eglInst,eglContext);
+  eglTerminate(eglInst);
+
   return true;
 }
 
@@ -2708,6 +2724,8 @@ int main(int argc, char** argv) {
   vaDestroyContext(vaInst,scalerC);
   //vaDestroyContext(vaInst,copierC);
   vaTerminate(vaInst);
+
+  quitEGL();
 
   close(encodefd);
   close(fd);
