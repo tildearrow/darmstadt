@@ -1369,6 +1369,24 @@ bool pSetSkip(string u) {
   return true;
 }
 
+bool pSetQueue(string u) {
+  try {
+    frameQueueSize=stoi(u);
+  } catch (std::exception& err) {
+    logE("invalid queue size value.\n");
+    return false;
+  }
+  if (frameQueueSize<4) {
+    logE("frame queue size must be at least 4.\n");
+    return false;
+  }
+  if (frameQueueSize>64) {
+    logE("frame queue size must be at most 64.\n");
+    return false;
+  }
+  return true;
+}
+
 bool pSet10Bit(string) {
   tenBit=true;
   return true;
@@ -1742,6 +1760,7 @@ void initParams() {
   //params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
   params.push_back(Param("C","cursor",true,pSetCursor,"on|off","enable/disable X11 cursor overlay"));
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
+  params.push_back(Param("Q","queue",true,pSetQueue,"value","set frame queue size (between 4 and 64)"));
   params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));
   params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
 
