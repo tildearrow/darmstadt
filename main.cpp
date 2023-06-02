@@ -215,6 +215,46 @@ const char* renderFragment=
   "  gl_FragColor=texture2D(uTexture,vTexCoord);\n"
   "}\n";
 
+// EFFECTS - motion blur
+const char* motionBlurVertex=
+  "attribute vec4 in_position;\n"
+  "attribute vec2 in_TexCoord;\n"
+  "\n"
+  "uniform vec2 uVelocity;\n"
+  "uniform float uSamples;\n"
+  "\n"
+  "varying vec2 vTexCoord;\n"
+  "varying float vAlpha;\n"
+  "\n"
+  "void main() {\n"
+  "  gl_Position=in_position;\n"
+  "  vTexCoord=in_TexCoord;\n"
+  "  vAlpha=1.0/uSamples;\n"
+  "}\n";
+
+const char* motionBlurFragment=
+  "#extension GL_OES_EGL_image_external : enable\n"
+  "precision mediump float;\n"
+  "uniform samplerExternalOES uTexture;\n"
+  "uniform float uSamples;\n"
+  "uniform vec2 uVelocity;\n"
+  "varying vec2 vTexCoord;\n"
+  "varying float vAlpha;\n"
+  "\n"
+  "void main() {\n"
+  "  vec4 a=vec4(0.0,0.0,0.0,0.0);\n"
+  "  for (int i=0; i<uSamples; ++i) {\n"
+  "    float fraction=float(i)/uSamples;\n"
+  "    vec2 pos=vTexCoord+(uVelocity*fraction);\n"
+  "    if (pos.x<0.0 || pos.x>1.0 || pos.y<0.0 || pos.y>1.0) continue;\n"
+  "    vec4 col=texture2D(uTexture,pos);\n"
+  "    if (col.a<(1.0/256.0)) continue;\n"
+  "    a+=col;\n"
+  "  }\n"
+  "  if (a.a<1.0/1024.0) discard;\n"
+  "  gl_FragColor=vec4(a.rgb*(1.0/a.a),a.a*vAlpha);\n"
+  "}\n";
+
 // stuff
 int writeToCache(void*, unsigned char* buf, int size) {
   bitRatePre+=size;
@@ -819,6 +859,7 @@ bool initEGL() {
   renderProgram=glCreateProgram();
   glAttachShader(renderProgram,renderVertexS);
   glAttachShader(renderProgram,renderFragmentS);
+  glBindAttribLocation(renderProgram,0,"in_position");
   glBindAttribLocation(renderProgram,1,"in_TexCoord");
   glLinkProgram(renderProgram);
   glGetProgramiv(renderProgram,GL_LINK_STATUS,&shStatus);
