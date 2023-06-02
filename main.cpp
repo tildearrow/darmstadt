@@ -7,6 +7,7 @@
 #include <X11/extensions/Xfixes.h>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include "imgui.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
 
@@ -38,7 +39,8 @@ gbm_device* gbmDevice;
 // STATS //
 int frame;
 int framerate;
-struct timespec btime, vtime, dtime, lastATime, sATime;
+struct timespec btime, vtimeGlobal, dtime, lastATime, sATime;
+struct timespec vtime[64];
 
 int recal=0;
 int arecal=0;
@@ -73,6 +75,8 @@ int allowedFormatsSize;
 int theFormat;
 int vaStat;
 int fskip;
+int throttleRate;
+int throttlePos;
 bool paused, noSignal;
 bool huff=false;
 int qp, br, gopSize, encSpeed;
@@ -110,9 +114,13 @@ GLfloat planeTri[16][12];
 GLfloat planeUV[16][8];
 GLuint planeTriBO;
 GLint renderTexture;
-int compoWrite=0;
-int compoRead=0;
-long frameTime[64];
+int compoWriteU=0;
+int compoReadU=0;
+std::atomic<int> compoWrite;
+std::atomic<int> compoRead;
+std::mutex compoEventLock;
+std::condition_variable compoEvent;
+pthread_t encThread;
 
 // X11 CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
 pthread_t x11Thread;
@@ -177,9 +185,6 @@ std::vector<Category> categories;
 
 string encName, audEncName;
 int autoDevice;
-
-// datasets for graphs
-float dsScanOff[1024]; size_t dsScanOffPos;
 
 AVRational tb;
 AVRational audiotb;
@@ -265,6 +270,244 @@ end:
   return ret;
 }
 
+void* encodeThread(void*) {
+  std::unique_lock<std::mutex> lock(compoEventLock);
+  while (true) {
+    int compoWriteS=compoWrite;
+
+    if (compoWriteS!=compoReadU) {
+      // encode
+      //printf("\x1b[2K\x1b[1;32m%d: preparing frame...\x1b[m\n",frame);
+
+      intptr_t boFD=gbm_bo_get_fd(compoBo[compoReadU]);
+      if (boFD<0) {
+        logE("could not fuck the BO\n");
+        continue;
+      }
+
+      vaCompoBD.buffers=(uintptr_t*)&boFD;
+      vaCompoBD.pixel_format=VA_FOURCC_BGRX;
+      vaCompoBD.width=ow;
+      vaCompoBD.height=oh;
+      vaCompoBD.data_size=ow*oh*4;
+      vaCompoBD.num_buffers=1;
+      vaCompoBD.flags=VA_SURFACE_EXTBUF_DESC_PROTECTED;
+      vaCompoBD.pitches[0]=ow*4;
+      vaCompoBD.offsets[0]=0;
+      vaCompoBD.num_planes=1;
+      
+      coAttr[0].type=VASurfaceAttribMemoryType;
+      coAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
+      coAttr[0].value.type=VAGenericValueTypeInteger;
+      coAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+      coAttr[1].type=VASurfaceAttribExternalBufferDescriptor;
+      coAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
+      coAttr[1].value.type=VAGenericValueTypePointer;
+      coAttr[1].value.value.p=&vaCompoBD;
+
+      if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&portFrame,1,coAttr,3))!=VA_STATUS_SUCCESS) {
+        logE("could not create surface for compositing... %x\n",vaStat);
+        continue;
+      }
+
+      if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
+        logE("no surface sync %x\n",vaStat);
+      }
+
+
+      scaleRegion.x=0;
+      scaleRegion.y=0;
+      scaleRegion.width=ow;
+      scaleRegion.height=oh;
+
+      scaler.surface=portFrame;
+      scaler.surface_region=NULL;
+      scaler.surface_color_standard=VAProcColorStandardBT709;
+      scaler.output_region=&scaleRegion;
+      scaler.output_background_color=0xff000000;
+      scaler.output_color_standard=VAProcColorStandardBT709;
+      scaler.pipeline_flags=0;
+      scaler.filter_flags=VA_FILTER_SCALING_HQ;
+
+      if (hesse) {
+        // HESSE NVENC CODE BEGIN //
+        hardFrame->pts=(vtime[compoReadU].tv_sec*100000+vtime[compoReadU].tv_nsec/10000);
+        hardFrame->pkt_dts=hardFrame->pts;
+
+        // how come this fails? we need to rescale!
+        if ((vaStat=vaGetImage(vaInst,portFrame,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+          logW("couldn't get image! %x\n",vaStat);
+        }
+        if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
+          logW("oh come on! %x\n",vaStat);
+        }
+        hardFrame->data[0]=addr;
+        writeFrame(encoder,hardFrame,out,stream);
+        if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
+          logE("could not unmap buffer: %x...\n",vaStat);
+        }
+        // HESSE NVENC CODE END //
+      } else {
+        // VA-API ENCODE SINGLE-THREAD CODE BEGIN //
+        hardFrame->pts=(vtime[compoReadU].tv_sec*100000+vtime[compoReadU].tv_nsec/10000);
+        hardFrame->pkt_dts=hardFrame->pts;
+        //printf("PTS: %d\n",hardFrame->pts);
+    
+        // convert
+        massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
+    
+        if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[1]))!=VA_STATUS_SUCCESS) {
+          printf("vaBeginPicture fail: %x\n",vaStat);
+          continue;
+        }
+        if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
+          printf("param buffer creation fail: %x\n",vaStat);
+          continue;
+        }
+        if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
+          printf("vaRenderPicture fail: %x\n",vaStat);
+          continue;
+        }
+        if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
+          printf("vaEndPicture fail: %x\n",vaStat);
+          continue;
+        }
+        if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
+          printf("vaDestroyBuffer fail: %x\n",vaStat);
+          continue;
+        }
+        
+        writeFrame(encoder,hardFrame,out,stream);
+        // VA-API ENCODE SINGLE-THREAD CODE END //
+      }
+      //av_frame_free(&hardFrame);
+
+      if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
+        printf("no surface sync %x\n",vaStat);
+      }
+      if ((vaStat=vaDestroySurfaces(vaInst,&portFrame,1))!=VA_STATUS_SUCCESS) {
+        logE("destroy portframes error %x\n",vaStat);
+        continue;
+      }
+      close(boFD);
+      
+      // AUDIO CODE BEGIN //
+      if (audioType!=audioTypeNone) {
+        AudioPacket* audioPack;
+        while ((audioPack=ae->read())!=NULL) {
+          // post-process
+          for (int i=0; i<1024*ae->channels(); i++) {
+            audioPack->data[i]*=audGain;
+            if (audLimiter) {
+              if (fabs(audioPack->data[i])>audLimAmt) {
+                audLimAmt=fabs(audioPack->data[i]);
+              }
+              audioPack->data[i]/=audLimAmt;
+              audLimAmt-=audLimAmt*0.00002;
+              if (audLimAmt<1) audLimAmt=1;
+            }
+          }
+          
+          // copy audio to packet
+          if (audFrame->format==AV_SAMPLE_FMT_FLT) {
+            memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
+          } else {
+            switch (audFrame->format) {
+              case AV_SAMPLE_FMT_U8:
+                for (int i=0; i<1024*ae->channels(); i++) {
+                  if (audioPack->data[i]>1) {
+                    ((unsigned char*)audFrame->data[0])[i]=255;
+                  } else if (audioPack->data[i]<-1) {
+                    ((unsigned char*)audFrame->data[0])[i]=0;
+                  } else {
+                    ((unsigned char*)audFrame->data[0])[i]=0x80+audioPack->data[i]*127;
+                  }
+                }
+                break;
+              case AV_SAMPLE_FMT_S16:
+                for (int i=0; i<1024*ae->channels(); i++) {
+                  if (audioPack->data[i]>1) {
+                    ((short*)audFrame->data[0])[i]=32767;
+                  } else if (audioPack->data[i]<-1) {
+                    ((short*)audFrame->data[0])[i]=-32767;
+                  } else {
+                    ((short*)audFrame->data[0])[i]=audioPack->data[i]*32767;
+                  }
+                }
+                break;
+              case AV_SAMPLE_FMT_S32:
+                // floating point limitations
+                for (int i=0; i<1024*ae->channels(); i++) {
+                  if (audioPack->data[i]>=1) {
+                    ((int*)audFrame->data[0])[i]=2147483647;
+                  } else if (audioPack->data[i]<=-1) {
+                    ((int*)audFrame->data[0])[i]=-2147483647;
+                  } else {
+                    ((int*)audFrame->data[0])[i]=audioPack->data[i]*8388608;
+                    ((int*)audFrame->data[0])[i]<<=8;
+                  }
+                }
+                break;
+              default:
+                logW("this sample format is not supported! (%d)\n",audFrame->format);
+                break;
+            }
+          }
+          lastATime=audioPack->time;
+          delete audioPack;
+          sATime=sATime+mkts(0,23219955);
+          if (avcodec_send_frame(audEncoder,audFrame)<0) {
+            logW("couldn't write audio frame!\n");
+            break;
+          }
+          while (1) {
+            audPacket=av_packet_alloc();
+            if (audPacket==NULL) {
+              logW("couldn't allocate audio packet!\n");
+              break;
+            }
+            if (avcodec_receive_packet(audEncoder,audPacket)) {
+              av_packet_free(&audPacket);
+              break;
+            }
+            audPacket->stream_index=audStream->index;
+            //audStream->cur_dts=audFrame->pts;
+            audPacket->dts=audPacket->pts;
+            av_packet_rescale_ts(audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
+            //audStream->cur_dts=audPacket->pts-1024;
+            //printf("tb: %d/%d dts: %ld\n",audStream->time_base.num,audStream->time_base.den,audStream->cur_dts);
+            if (av_write_frame(out,audPacket)<0) {
+              printf("unable to write frame ATTENTION\n");
+            }
+            audFrame->pts+=1024;
+            audFrame->pkt_dts+=1024;
+            avio_flush(out->pb);
+            if ((wtEnd-wtStart)>mkts(0,16666667)) {
+              printf("\x1b[1;32mWARNING! audio write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+              audioStalls++;
+            }
+            av_packet_free(&audPacket);
+          }
+          if ((lastATime-sATime)>mkts(0,40000000)) {
+            ae->wantBlank=true;
+            printf("\x1b[2K\x1b[0;33m%d: audio is late! (%d)\x1b[m\n",frame,++arecal);
+          }
+        }
+      }
+      // AUDIO CODE END //
+      if (++compoReadU>=frameQueueSize) {
+        compoReadU=0;
+      }
+      compoRead=compoReadU;
+    } else {
+      // wait
+      if (quit) break;
+      compoEvent.wait(lock);
+    }
+  }
+  return NULL;
+}
+
 void* x11CursorThread(void*) {
   while (true) {
     if (quit) break;
@@ -343,7 +586,7 @@ bool initEGL() {
   logD("creating GBM buffers...\n");
   for (int i=0; i<frameQueueSize; i++) {
     compoBo[i]=gbm_bo_create(gbmDevice,ow,oh,boFormat,GBM_BO_USE_RENDERING|GBM_BO_USE_LINEAR);
-    if (compoBo==NULL) {
+    if (compoBo[i]==NULL) {
       logE("couldn't make GBM buffer for frame %d.\n",i);
       return false;
     }
@@ -552,7 +795,7 @@ bool initEGL() {
     }
   }
 
-  // initialize OpenGL (TODO: error checks)
+  // initialize OpenGL
   int shStatus;
   logD("initialize shader...\n");
   renderVertexS=glCreateShader(GL_VERTEX_SHADER);
@@ -765,7 +1008,7 @@ bool composeFrameEGL() {
   }
 
   // draw
-  glBindFramebuffer(GL_FRAMEBUFFER,compoFB[compoWrite]);
+  glBindFramebuffer(GL_FRAMEBUFFER,compoFB[compoWriteU]);
 
   glViewport(0,0,ow,oh);
   glClearColor(0.0, 0.0, 0.0, 1.0);
@@ -810,10 +1053,12 @@ bool composeFrameEGL() {
         "frame time: %ldµs\n"
         "drop: %d\n"
         "stalls: %d video, %d audio\n"
-        "audio resync: %d",
+        "audio resync: %d\n"
+        "queued frames: %d\n"
+        "throttling: %d\n",
         // ARGUMENTS
         // time
-        vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,frame,
+        vtimeGlobal.tv_sec/3600,(vtimeGlobal.tv_sec/60)%60,vtimeGlobal.tv_sec%60,vtimeGlobal.tv_nsec/1000000,frame,
         // bitrate
         bitRate>>10,
         // size
@@ -827,7 +1072,11 @@ bool composeFrameEGL() {
         // A/V write stalls
         videoStalls,audioStalls,
         // audio resync
-        arecal
+        arecal,
+        // queued frames
+        (frameQueueSize+compoWriteU-compoRead)%frameQueueSize,
+        // throttling
+        throttleRate
       );
     }
     ImGui::End();
@@ -853,7 +1102,8 @@ bool composeFrameEGL() {
   }
   drmModeFreePlaneResources(planeres);
 
-  if (++compoWrite>=frameQueueSize) compoWrite=0;
+  if (++compoWriteU>=frameQueueSize) compoWriteU=0;
+  compoWrite=compoWriteU;
 
   return true;
 }
@@ -1562,6 +1812,8 @@ int main(int argc, char** argv) {
   bitRatePre=0;
   framerate=0;
   fskip=1;
+  throttlePos=0;
+  throttleRate=0;
   qp=-1;
   br=-1;
   gopSize=-1;
@@ -1579,6 +1831,8 @@ int main(int argc, char** argv) {
   audLimiter=false;
   audLimAmt=1;
   audGain=1;
+  compoWrite=0;
+  compoRead=0;
   audioType=audioTypeJACK;
   audName="";
   autoDevice=-1;
@@ -2258,6 +2512,13 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
+
+  // FFMPEG THREAD INIT BEGIN //
+  if (pthread_create(&encThread,NULL,encodeThread,NULL)!=0) {
+    logE("couldn't create encoding thread!\n");
+    return 1;
+  }
+  // FFMPEG THREAD INIT END //
   
   drmVBlankReply vreply;
   int startSeq;
@@ -2270,6 +2531,7 @@ int main(int argc, char** argv) {
   
   ioctl(1,TIOCGWINSZ,&winSize);
   if (audioType!=audioTypeNone) ae->start();
+  // TODO: use RELATIVE now?
   while (1) {
     vblank.request.sequence=startSeq+fskip;
     vblank.request.type=DRM_VBLANK_ABSOLUTE;
@@ -2283,26 +2545,15 @@ int main(int argc, char** argv) {
     vreply=vblank.reply;
     startSeq+=fskip;
     if ((vblank.reply.sequence-startSeq)>0) {
-      printf("\x1b[2K\x1b[1;33m%d: dropped frame! (%d)\x1b[m\n",frame,++recal);
+      printf("\x1b[2K\x1b[1;31m%d: dropped frame! (%d)\x1b[m\n",frame,++recal);
       startSeq=vreply.sequence;
     }
     
-    //printf("PRE: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
-    
-    /*
-    while ((curTime(CLOCK_MONOTONIC))<mkts(vreply.tval_sec,1000000+vreply.tval_usec*1000)) {
-      usleep(2000);
-    }*/
-
-    //printf("POST: % 5ldµs. \n",(curTime(CLOCK_MONOTONIC)-mkts(vreply.tval_sec,vreply.tval_usec*1000)).tv_nsec/1000);
-   
-    //printf("\x1b[2J\x1b[1;1H\n");
-    
-    dtime=vtime;
-    vtime=mkts(vreply.tval_sec,vreply.tval_usec*1000)-btime;
+    dtime=vtimeGlobal;
+    vtimeGlobal=mkts(vreply.tval_sec,vreply.tval_usec*1000)-btime;
     if (btime==mkts(0,0)) {
-      btime=vtime;
-      vtime=mkts(0,0);
+      btime=vtimeGlobal;
+      vtimeGlobal=mkts(0,0);
     }
     if (newSize) {
       newSize=false;
@@ -2310,15 +2561,16 @@ int main(int argc, char** argv) {
     }
     
     if (syncMethod==syncTimer) {
-      if (vtime<nextMilestone) continue;
+      if (vtimeGlobal<nextMilestone) continue;
       nextMilestone=nextMilestone+mkts(0,16666667);
-      while ((vtime-mkts(0,16666667))>nextMilestone) nextMilestone=nextMilestone+mkts(0,16666667);
+      while ((vtimeGlobal-mkts(0,16666667))>nextMilestone) nextMilestone=nextMilestone+mkts(0,16666667);
     }
-    long int delta=(vtime-dtime).tv_nsec;
+    long int delta=(vtimeGlobal-dtime).tv_nsec;
     if (delta!=0) delta=(int)round((double)1000000000/(double)delta);
     //if (delta==0) delta=1000000000;
+
+    int queuedItems=(frameQueueSize+compoWriteU-compoRead)%frameQueueSize;
     
-        
     // >>> STATUS LINE <<<
     printf(
       // begin
@@ -2330,7 +2582,7 @@ int main(int argc, char** argv) {
       // FPS
       "FPS:%s%3ld "
       // queue
-      "\x1b[mqueue: \x1b[1m%6ldK "
+      "\x1b[mqueue: \x1b[1m%2d "
       // bitrate
       "\x1b[mrate: %s%6ldKbit "
       // size
@@ -2345,11 +2597,11 @@ int main(int argc, char** argv) {
       // frame
       (noSignal)?("\x1b[1;31m-> NO SIGNAL <- \x1b[m"):(strFormat("frame \x1b[1m% 8d\x1b[m: ",frame).c_str()),
       // time
-      vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,
+      vtimeGlobal.tv_sec/3600,(vtimeGlobal.tv_sec/60)%60,vtimeGlobal.tv_sec%60,vtimeGlobal.tv_nsec/1000000,
       // FPS
       (delta>=(50/fskip))?("\x1b[1;32m"):("\x1b[1;33m"),delta,
       // queue
-      cache.queueSize()>>10,
+      queuedItems,
       // bitrate
       (bitRate>=30000000)?("\x1b[1;33m"):("\x1b[1;32m"),bitRate>>10,
       // size
@@ -2366,244 +2618,54 @@ int main(int argc, char** argv) {
     //printf("\x1b[2K\x1b[0;33m%d: time: %ldµs\x1b[m\n",frame,(tEnd-tStart).tv_nsec/1000);
     tDelta=(tEnd-tStart).tv_nsec/1000;
 
-    // RETRIEVE CODE BEGIN //
-    tStart=curTime(CLOCK_MONOTONIC);
-
-    if (!composeFrameEGL()) {
-      logE("couldn't compose frame.\n");
-      return 1;
-    }
-
-    //printf("\x1b[2K\x1b[1;32m%d: preparing frame...\x1b[m\n",frame);
-    
-    dsScanOff[dsScanOffPos++]=(wtEnd-wtStart).tv_nsec;
-    dsScanOffPos&=1023;
-    //makeGraph(0,2,40,12,true,dsScanOff,1024,dsScanOffPos-40);
-
-    intptr_t boFD=gbm_bo_get_fd(compoBo[0]);
-    if (boFD<0) {
-      logE("could not fuck the BO\n");
-      return 1;
-    }
-
-    vaCompoBD.buffers=(uintptr_t*)&boFD;
-    vaCompoBD.pixel_format=VA_FOURCC_BGRX;
-    vaCompoBD.width=ow;
-    vaCompoBD.height=oh;
-    vaCompoBD.data_size=ow*oh*4;
-    vaCompoBD.num_buffers=1;
-    vaCompoBD.flags=VA_SURFACE_EXTBUF_DESC_PROTECTED;
-    vaCompoBD.pitches[0]=ow*4;
-    vaCompoBD.offsets[0]=0;
-    vaCompoBD.num_planes=1;
-    
-    coAttr[0].type=VASurfaceAttribMemoryType;
-    coAttr[0].flags=VA_SURFACE_ATTRIB_SETTABLE;
-    coAttr[0].value.type=VAGenericValueTypeInteger;
-    coAttr[0].value.value.i=VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
-    coAttr[1].type=VASurfaceAttribExternalBufferDescriptor;
-    coAttr[1].flags=VA_SURFACE_ATTRIB_SETTABLE;
-    coAttr[1].value.type=VAGenericValueTypePointer;
-    coAttr[1].value.value.p=&vaCompoBD;
-
-    if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&portFrame,1,coAttr,3))!=VA_STATUS_SUCCESS) {
-      logE("could not create surface for compositing... %x\n",vaStat);
-      return 1;
-    }
-
-    if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
-      logE("no surface sync %x\n",vaStat);
-    }
-
-
-    scaleRegion.x=0;
-    scaleRegion.y=0;
-    scaleRegion.width=ow;
-    scaleRegion.height=oh;
-
-    scaler.surface=portFrame;
-    scaler.surface_region=NULL;
-    scaler.surface_color_standard=VAProcColorStandardBT709;
-    scaler.output_region=&scaleRegion;
-    scaler.output_background_color=0xff000000;
-    scaler.output_color_standard=VAProcColorStandardBT709;
-    scaler.pipeline_flags=0;
-    scaler.filter_flags=VA_FILTER_SCALING_HQ;
-
-    if (hesse) {
-      // HESSE NVENC CODE BEGIN //
-      hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
-      hardFrame->pkt_dts=hardFrame->pts;
-
-      // how come this fails? we need to rescale!
-      if ((vaStat=vaGetImage(vaInst,portFrame,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
-        logW("couldn't get image! %x\n",vaStat);
+    if (throttleRate<1) {
+      if (queuedItems>(frameQueueSize>>1)) {
+        printf("\x1b[2K\x1b[1;33m%d: throttling!\x1b[m\n",frame);
+        throttleRate++;
       }
-      if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
-        logW("oh come on! %x\n",vaStat);
-      }
-      hardFrame->data[0]=addr;
-      writeFrame(encoder,hardFrame,out,stream);
-      if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
-        logE("could not unmap buffer: %x...\n",vaStat);
-      }
-      // HESSE NVENC CODE END //
     } else {
-      // VA-API ENCODE SINGLE-THREAD CODE BEGIN //
-      hardFrame->pts=(vtime.tv_sec*100000+vtime.tv_nsec/10000);
-      hardFrame->pkt_dts=hardFrame->pts;
-      //printf("PTS: %d\n",hardFrame->pts);
-  
-      // convert
-      massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
-  
-      if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[1]))!=VA_STATUS_SUCCESS) {
-        printf("vaBeginPicture fail: %x\n",vaStat);
-        return 1;
+      if (queuedItems>(frameQueueSize-2)) {
+        throttleRate++;
       }
-      if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
-        printf("param buffer creation fail: %x\n",vaStat);
-        return 1;
+      if (queuedItems<=1) {
+        printf("\x1b[2K\x1b[1;32m%d: disabling throttle\x1b[m\n",frame);
+        throttleRate=0;
       }
-      if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
-        printf("vaRenderPicture fail: %x\n",vaStat);
-        return 1;
-      }
-      if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
-        printf("vaEndPicture fail: %x\n",vaStat);
-        return 1;
-      }
-      if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
-        printf("vaDestroyBuffer fail: %x\n",vaStat);
-        return 1;
-      }
-      
-      writeFrame(encoder,hardFrame,out,stream);
-      // VA-API ENCODE SINGLE-THREAD CODE END //
     }
-    //av_frame_free(&hardFrame);
 
-    if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
-      printf("no surface sync %x\n",vaStat);
-    }
-    if ((vaStat=vaDestroySurfaces(vaInst,&portFrame,1))!=VA_STATUS_SUCCESS) {
-      logE("destroy portframes error %x\n",vaStat);
-      return 1;
-    }
-    close(boFD);
-    // RETRIEVE CODE END //
-    
-    // AUDIO CODE BEGIN //
-    if (audioType!=audioTypeNone) {
-      AudioPacket* audioPack;
-      while ((audioPack=ae->read())!=NULL) {
-        // post-process
-        for (int i=0; i<1024*ae->channels(); i++) {
-          audioPack->data[i]*=audGain;
-          if (audLimiter) {
-            if (fabs(audioPack->data[i])>audLimAmt) {
-              audLimAmt=fabs(audioPack->data[i]);
-            }
-            audioPack->data[i]/=audLimAmt;
-            audLimAmt-=audLimAmt*0.00002;
-            if (audLimAmt<1) audLimAmt=1;
-          }
-        }
-        
-        // copy audio to packet
-        if (audFrame->format==AV_SAMPLE_FMT_FLT) {
-          memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
-        } else {
-          switch (audFrame->format) {
-            case AV_SAMPLE_FMT_U8:
-              for (int i=0; i<1024*ae->channels(); i++) {
-                if (audioPack->data[i]>1) {
-                  ((unsigned char*)audFrame->data[0])[i]=255;
-                } else if (audioPack->data[i]<-1) {
-                  ((unsigned char*)audFrame->data[0])[i]=0;
-                } else {
-                  ((unsigned char*)audFrame->data[0])[i]=0x80+audioPack->data[i]*127;
-                }
-              }
-              break;
-            case AV_SAMPLE_FMT_S16:
-              for (int i=0; i<1024*ae->channels(); i++) {
-                if (audioPack->data[i]>1) {
-                  ((short*)audFrame->data[0])[i]=32767;
-                } else if (audioPack->data[i]<-1) {
-                  ((short*)audFrame->data[0])[i]=-32767;
-                } else {
-                  ((short*)audFrame->data[0])[i]=audioPack->data[i]*32767;
-                }
-              }
-              break;
-            case AV_SAMPLE_FMT_S32:
-              // floating point limitations
-              for (int i=0; i<1024*ae->channels(); i++) {
-                if (audioPack->data[i]>=1) {
-                  ((int*)audFrame->data[0])[i]=2147483647;
-                } else if (audioPack->data[i]<=-1) {
-                  ((int*)audFrame->data[0])[i]=-2147483647;
-                } else {
-                  ((int*)audFrame->data[0])[i]=audioPack->data[i]*8388608;
-                  ((int*)audFrame->data[0])[i]<<=8;
-                }
-              }
-              break;
-            default:
-              logW("this sample format is not supported! (%d)\n",audFrame->format);
-              break;
-          }
-        }
-        lastATime=audioPack->time;
-        delete audioPack;
-        sATime=sATime+mkts(0,23219955);
-        if (avcodec_send_frame(audEncoder,audFrame)<0) {
-          logW("couldn't write audio frame!\n");
-          break;
-        }
-        while (1) {
-          audPacket=av_packet_alloc();
-          if (audPacket==NULL) {
-            logW("couldn't allocate audio packet!\n");
-            break;
-          }
-          if (avcodec_receive_packet(audEncoder,audPacket)) {
-            av_packet_free(&audPacket);
-            break;
-          }
-          audPacket->stream_index=audStream->index;
-          //audStream->cur_dts=audFrame->pts;
-          audPacket->dts=audPacket->pts;
-          av_packet_rescale_ts(audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
-          //audStream->cur_dts=audPacket->pts-1024;
-          //printf("tb: %d/%d dts: %ld\n",audStream->time_base.num,audStream->time_base.den,audStream->cur_dts);
-          if (av_write_frame(out,audPacket)<0) {
-            printf("unable to write frame ATTENTION\n");
-          }
-          audFrame->pts+=1024;
-          audFrame->pkt_dts+=1024;
-          avio_flush(out->pb);
-          if ((wtEnd-wtStart)>mkts(0,16666667)) {
-            printf("\x1b[1;32mWARNING! audio write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
-            audioStalls++;
-          }
-          av_packet_free(&audPacket);
-        }
-        if ((lastATime-sATime)>mkts(0,40000000)) {
-          ae->wantBlank=true;
-          printf("\x1b[2K\x1b[0;33m%d: audio is late! (%d)\x1b[m\n",frame,++arecal);
-        }
+    if (++throttlePos>throttleRate && queuedItems<(frameQueueSize-1)) {
+      // RETRIEVE CODE BEGIN //
+      tStart=curTime(CLOCK_MONOTONIC);
+
+      throttlePos=0;
+      vtime[compoWriteU]=vtimeGlobal;
+
+      if (!composeFrameEGL()) {
+        logE("couldn't compose frame.\n");
+        return 1;
       }
+
+      compoEvent.notify_one();
+      
+      tEnd=curTime(CLOCK_MONOTONIC);
+      // RETRIEVE CODE END //
+    } else {
+      recal++;
     }
-    // AUDIO CODE END //
-    
-    tEnd=curTime(CLOCK_MONOTONIC);
 
     if (!noSignal) {
       frame++;
     }
     if (quit) break;
+  }
+
+  logI("finishing...\n");
+
+  void* encRet=NULL;
+  compoEvent.notify_one();
+  if (pthread_join(encThread,&encRet)!=0) {
+    logE("error when joining encoding thread!\n");
+    sleep(2);
   }
 
   if (av_write_trailer(out)<0) {
@@ -2648,6 +2710,6 @@ int main(int argc, char** argv) {
   printf("audio resync count: %d\n",arecal);
   printf("audio write stalls: %d\n",audioStalls);
   printf("repeated framebuffer handles: %d\n",repeatCount);
-  logI("finished recording %.2ld:%.2ld:%.2ld.%.3ld (%d).\n",vtime.tv_sec/3600,(vtime.tv_sec/60)%60,vtime.tv_sec%60,vtime.tv_nsec/1000000,frame);
+  logI("finished recording %.2ld:%.2ld:%.2ld.%.3ld (%d).\n",vtimeGlobal.tv_sec/3600,(vtimeGlobal.tv_sec/60)%60,vtimeGlobal.tv_sec%60,vtimeGlobal.tv_nsec/1000000,frame);
   return 0;
 }
