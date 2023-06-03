@@ -370,7 +370,7 @@ void* encodeThread(void*) {
       scaler.filter_flags=VA_FILTER_SCALING_HQ;
 
       if (hesse) {
-        // HESSE NVENC CODE BEGIN //
+        // HESSE NVENC/MEITNER SOFTWARE CODE BEGIN //
         hardFrame->pts=(vtime[compoReadU].tv_sec*100000+vtime[compoReadU].tv_nsec/10000);
         hardFrame->pkt_dts=hardFrame->pts;
 
@@ -386,7 +386,7 @@ void* encodeThread(void*) {
         if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
           logE("could not unmap buffer: %x...\n",vaStat);
         }
-        // HESSE NVENC CODE END //
+        // HESSE NVENC/MEITNER SOFTWARE CODE END //
       } else {
         // VA-API ENCODE SINGLE-THREAD CODE BEGIN //
         hardFrame->pts=(vtime[compoReadU].tv_sec*100000+vtime[compoReadU].tv_nsec/10000);
@@ -433,105 +433,115 @@ void* encodeThread(void*) {
       
       // AUDIO CODE BEGIN //
       if (audioType!=audioTypeNone) {
-        AudioPacket* audioPack;
-        while ((audioPack=ae->read())!=NULL) {
-          // post-process
-          for (int i=0; i<1024*ae->channels(); i++) {
-            audioPack->data[i]*=audGain;
-            if (audLimiter) {
-              if (fabs(audioPack->data[i])>audLimAmt) {
-                audLimAmt=fabs(audioPack->data[i]);
+        struct timespec audTime, audDelta;
+        audTime.tv_sec=audFrame->pts/audEncoder->sample_rate;
+        audTime.tv_nsec=1000*(((audFrame->pts%audEncoder->sample_rate)*1000000)/audEncoder->sample_rate);
+        audDelta=audTime-vtime[compoReadU];
+        //printf("audio time: %s delta: %s\n",tstos(audTime).c_str(),tstos(audTime-vtime[compoReadU]).c_str());
+
+        if (audDelta<mkts(0,60000000)) {
+          AudioPacket* audioPack;
+          while ((audioPack=ae->read())!=NULL) {
+            // post-process
+            for (int i=0; i<1024*ae->channels(); i++) {
+              audioPack->data[i]*=audGain;
+              if (audLimiter) {
+                if (fabs(audioPack->data[i])>audLimAmt) {
+                  audLimAmt=fabs(audioPack->data[i]);
+                }
+                audioPack->data[i]/=audLimAmt;
+                audLimAmt-=audLimAmt*0.00002;
+                if (audLimAmt<1) audLimAmt=1;
               }
-              audioPack->data[i]/=audLimAmt;
-              audLimAmt-=audLimAmt*0.00002;
-              if (audLimAmt<1) audLimAmt=1;
             }
-          }
-          
-          // copy audio to packet
-          if (audFrame->format==AV_SAMPLE_FMT_FLT) {
-            memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
-          } else {
-            switch (audFrame->format) {
-              case AV_SAMPLE_FMT_U8:
-                for (int i=0; i<1024*ae->channels(); i++) {
-                  if (audioPack->data[i]>1) {
-                    ((unsigned char*)audFrame->data[0])[i]=255;
-                  } else if (audioPack->data[i]<-1) {
-                    ((unsigned char*)audFrame->data[0])[i]=0;
-                  } else {
-                    ((unsigned char*)audFrame->data[0])[i]=0x80+audioPack->data[i]*127;
+            
+            // copy audio to packet
+            if (audFrame->format==AV_SAMPLE_FMT_FLT) {
+              memcpy(audFrame->data[0],audioPack->data,1024*ae->channels()*sizeof(float));
+            } else {
+              switch (audFrame->format) {
+                case AV_SAMPLE_FMT_U8:
+                  for (int i=0; i<1024*ae->channels(); i++) {
+                    if (audioPack->data[i]>1) {
+                      ((unsigned char*)audFrame->data[0])[i]=255;
+                    } else if (audioPack->data[i]<-1) {
+                      ((unsigned char*)audFrame->data[0])[i]=0;
+                    } else {
+                      ((unsigned char*)audFrame->data[0])[i]=0x80+audioPack->data[i]*127;
+                    }
                   }
-                }
-                break;
-              case AV_SAMPLE_FMT_S16:
-                for (int i=0; i<1024*ae->channels(); i++) {
-                  if (audioPack->data[i]>1) {
-                    ((short*)audFrame->data[0])[i]=32767;
-                  } else if (audioPack->data[i]<-1) {
-                    ((short*)audFrame->data[0])[i]=-32767;
-                  } else {
-                    ((short*)audFrame->data[0])[i]=audioPack->data[i]*32767;
+                  break;
+                case AV_SAMPLE_FMT_S16:
+                  for (int i=0; i<1024*ae->channels(); i++) {
+                    if (audioPack->data[i]>1) {
+                      ((short*)audFrame->data[0])[i]=32767;
+                    } else if (audioPack->data[i]<-1) {
+                      ((short*)audFrame->data[0])[i]=-32767;
+                    } else {
+                      ((short*)audFrame->data[0])[i]=audioPack->data[i]*32767;
+                    }
                   }
-                }
-                break;
-              case AV_SAMPLE_FMT_S32:
-                // floating point limitations
-                for (int i=0; i<1024*ae->channels(); i++) {
-                  if (audioPack->data[i]>=1) {
-                    ((int*)audFrame->data[0])[i]=2147483647;
-                  } else if (audioPack->data[i]<=-1) {
-                    ((int*)audFrame->data[0])[i]=-2147483647;
-                  } else {
-                    ((int*)audFrame->data[0])[i]=audioPack->data[i]*8388608;
-                    ((int*)audFrame->data[0])[i]<<=8;
+                  break;
+                case AV_SAMPLE_FMT_S32:
+                  // floating point limitations
+                  for (int i=0; i<1024*ae->channels(); i++) {
+                    if (audioPack->data[i]>=1) {
+                      ((int*)audFrame->data[0])[i]=2147483647;
+                    } else if (audioPack->data[i]<=-1) {
+                      ((int*)audFrame->data[0])[i]=-2147483647;
+                    } else {
+                      ((int*)audFrame->data[0])[i]=audioPack->data[i]*8388608;
+                      ((int*)audFrame->data[0])[i]<<=8;
+                    }
                   }
-                }
-                break;
-              default:
-                logW("this sample format is not supported! (%d)\n",audFrame->format);
-                break;
+                  break;
+                default:
+                  logW("this sample format is not supported! (%d)\n",audFrame->format);
+                  break;
+              }
             }
-          }
-          lastATime=audioPack->time;
-          delete audioPack;
-          sATime=sATime+mkts(0,23219955);
-          if (avcodec_send_frame(audEncoder,audFrame)<0) {
-            logW("couldn't write audio frame!\n");
-            break;
-          }
-          while (1) {
-            audPacket=av_packet_alloc();
-            if (audPacket==NULL) {
-              logW("couldn't allocate audio packet!\n");
+            lastATime=audioPack->time;
+            delete audioPack;
+            sATime=sATime+mkts(0,23219955);
+            if (avcodec_send_frame(audEncoder,audFrame)<0) {
+              logW("couldn't write audio frame!\n");
               break;
             }
-            if (avcodec_receive_packet(audEncoder,audPacket)) {
+            while (1) {
+              audPacket=av_packet_alloc();
+              if (audPacket==NULL) {
+                logW("couldn't allocate audio packet!\n");
+                break;
+              }
+              if (avcodec_receive_packet(audEncoder,audPacket)) {
+                av_packet_free(&audPacket);
+                break;
+              }
+              audPacket->stream_index=audStream->index;
+              //audStream->cur_dts=audFrame->pts;
+              audPacket->dts=audPacket->pts;
+              av_packet_rescale_ts(audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
+              //audStream->cur_dts=audPacket->pts-1024;
+              //printf("tb: %d/%d dts: %ld\n",audStream->time_base.num,audStream->time_base.den,audStream->cur_dts);
+              if (av_write_frame(out,audPacket)<0) {
+                printf("unable to write frame ATTENTION\n");
+              }
+              audFrame->pts+=1024;
+              audFrame->pkt_dts+=1024;
+              avio_flush(out->pb);
+              if ((wtEnd-wtStart)>mkts(0,16666667)) {
+                printf("\x1b[1;32mWARNING! audio write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
+                audioStalls++;
+              }
               av_packet_free(&audPacket);
-              break;
             }
-            audPacket->stream_index=audStream->index;
-            //audStream->cur_dts=audFrame->pts;
-            audPacket->dts=audPacket->pts;
-            av_packet_rescale_ts(audPacket,(AVRational){1,audEncoder->sample_rate},audStream->time_base);
-            //audStream->cur_dts=audPacket->pts-1024;
-            //printf("tb: %d/%d dts: %ld\n",audStream->time_base.num,audStream->time_base.den,audStream->cur_dts);
-            if (av_interleaved_write_frame(out,audPacket)<0) {
-              printf("unable to write frame ATTENTION\n");
+            if ((lastATime-sATime)>mkts(0,40000000)) {
+              ae->wantBlank=true;
+              printf("\x1b[2K\x1b[0;33m%d: audio is late! (%d)\x1b[m\n",frame,++arecal);
             }
-            audFrame->pts+=1024;
-            audFrame->pkt_dts+=1024;
-            avio_flush(out->pb);
-            if ((wtEnd-wtStart)>mkts(0,16666667)) {
-              printf("\x1b[1;32mWARNING! audio write took too long :( (%ldµs)\n",(wtEnd-wtStart).tv_nsec/1000);
-              audioStalls++;
-            }
-            av_packet_free(&audPacket);
           }
-          if ((lastATime-sATime)>mkts(0,40000000)) {
-            ae->wantBlank=true;
-            printf("\x1b[2K\x1b[0;33m%d: audio is late! (%d)\x1b[m\n",frame,++arecal);
-          }
+        } else {
+          printf("it's too early\n");
         }
       }
       // AUDIO CODE END //
@@ -2245,7 +2255,6 @@ int main(int argc, char** argv) {
   encoder->width=ow;
   encoder->height=oh;
   encoder->time_base=tb;
-  //encoder->thread_count=4;
   if (framerate>0) {
     encoder->framerate=(AVRational){framerate,fskip};
   }
@@ -2260,7 +2269,12 @@ int main(int argc, char** argv) {
     }
   }
   if (hesse) {
-    encoder->pix_fmt=AV_PIX_FMT_BGR0;
+    if (encName=="huffyuv" || encName=="ffvhuff") {
+      encoder->pix_fmt=AV_PIX_FMT_BGRA;
+      encoder->thread_count=4;
+    } else {
+      encoder->pix_fmt=AV_PIX_FMT_BGR0;
+    }
   } else {
     encoder->pix_fmt=AV_PIX_FMT_VAAPI;
   }
