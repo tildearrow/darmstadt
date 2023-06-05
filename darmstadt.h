@@ -51,6 +51,10 @@ extern "C" {
 #define S(x) std::string(x)
 typedef std::string string;
 
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#define MAX(a,b) (((a)>(b))?(a):(b))
+#define CLAMP(x,xMin,xMax) (MIN(MAX((x),(xMin)),(xMax)))
+
 bool operator ==(const struct timespec& l, const struct timespec& r);
 bool operator >(const struct timespec& l, const struct timespec& r);
 bool operator <(const struct timespec& l, const struct timespec& r);

@@ -110,6 +110,7 @@ const char* eglExtsBase=NULL;
 const char* eglExtsInst=NULL;
 const char* glExts=NULL;
 GLuint renderVertexS, renderFragmentS, renderProgram;
+GLuint mblurVertexS, mblurFragmentS, mblurProgram, mblur_uTexture, mblur_uCenter, mblur_uVelocity, mblur_uSamples, mblur_uAlpha;
 GLfloat planeTri[16][12];
 GLfloat planeUV[16][8];
 GLuint planeTriBO;
@@ -128,6 +129,7 @@ Display* x11Inst;
 Window x11Screen;
 // (X, Y) 16.16
 std::atomic<unsigned int> cursorPos;
+unsigned int lastCurPos=0;
 
 // VIDEO //
 AVStream* stream;
@@ -216,43 +218,49 @@ const char* renderFragment=
   "}\n";
 
 // EFFECTS - motion blur
-const char* motionBlurVertex=
+const char* mblurVertex=
+  "precision mediump float;\n"
   "attribute vec4 in_position;\n"
   "attribute vec2 in_TexCoord;\n"
   "\n"
   "uniform vec2 uVelocity;\n"
-  "uniform float uSamples;\n"
+  "uniform vec2 uCenter;\n"
   "\n"
   "varying vec2 vTexCoord;\n"
-  "varying float vAlpha;\n"
   "\n"
   "void main() {\n"
-  "  gl_Position=in_position;\n"
-  "  vTexCoord=in_TexCoord;\n"
-  "  vAlpha=1.0/uSamples;\n"
+  "  vec2 finalPos=uCenter+(in_position.xy-uCenter)*(vec2(1.0,1.0)+abs(uVelocity))+(uVelocity*abs(in_position.xy-uCenter));\n"
+  "  gl_Position=vec4(finalPos,in_position.zw);\n"
+  "  vTexCoord=in_TexCoord+(in_TexCoord-vec2(0.5,0.5))*abs(uVelocity);\n"
   "}\n";
 
-const char* motionBlurFragment=
+const char* mblurFragment=
   "#extension GL_OES_EGL_image_external : enable\n"
   "precision mediump float;\n"
   "uniform samplerExternalOES uTexture;\n"
   "uniform float uSamples;\n"
+  "uniform float uAlpha;\n"
   "uniform vec2 uVelocity;\n"
+  "uniform vec2 uCenter;\n"
   "varying vec2 vTexCoord;\n"
-  "varying float vAlpha;\n"
   "\n"
   "void main() {\n"
-  "  vec4 a=vec4(0.0,0.0,0.0,0.0);\n"
-  "  for (int i=0; i<uSamples; ++i) {\n"
-  "    float fraction=float(i)/uSamples;\n"
-  "    vec2 pos=vTexCoord+(uVelocity*fraction);\n"
-  "    if (pos.x<0.0 || pos.x>1.0 || pos.y<0.0 || pos.y>1.0) continue;\n"
-  "    vec4 col=texture2D(uTexture,pos);\n"
-  "    if (col.a<(1.0/256.0)) continue;\n"
-  "    a+=col;\n"
+  "  if (uSamples<1.0) {\n"
+  "    if (vTexCoord.x<0.0 || vTexCoord.x>1.0 || vTexCoord.y<0.0 || vTexCoord.y>1.0) discard;\n"
+  "    gl_FragColor=texture2D(uTexture,vTexCoord);\n"
+  "  } else {\n"
+  "    vec4 a=vec4(0.0,0.0,0.0,0.0);\n"
+  "    for (float i=0.0; i<=uSamples; i+=1.0) {\n"
+  "      float fraction=i/(2.0*uSamples);\n"
+  "      vec2 pos=vTexCoord+(uVelocity*fraction);\n"
+  "      if (pos.x<0.0 || pos.x>1.0 || pos.y<0.0 || pos.y>1.0) continue;\n"
+  "      vec4 col=texture2D(uTexture,pos);\n"
+  "      if (col.a<(1.0/256.0)) continue;\n"
+  "      a+=col;\n"
+  "    }\n"
+  "    if (a.a<1.0/1024.0) discard;\n"
+  "    gl_FragColor=vec4(a.rgb*(1.0/a.a),a.a*uAlpha);\n"
   "  }\n"
-  "  if (a.a<1.0/1024.0) discard;\n"
-  "  gl_FragColor=vec4(a.rgb*(1.0/a.a),a.a*vAlpha);\n"
   "}\n";
 
 // stuff
@@ -540,8 +548,6 @@ void* encodeThread(void*) {
               printf("\x1b[2K\x1b[0;33m%d: audio is late! (%d)\x1b[m\n",frame,++arecal);
             }
           }
-        } else {
-          printf("it's too early\n");
         }
       }
       // AUDIO CODE END //
@@ -628,6 +634,53 @@ void* initGLProc(const char* extList, const char* extName, const char* procName)
     logE("procedure " #_p " of extension " _n " not found.\n"); \
     return false; \
   }
+
+bool createShader(const char* vertexS, const char* fragmentS, unsigned int& vertex, unsigned int& fragment, unsigned int& program) {
+  int status;
+  char infoLog[4096];
+  int infoLogLen;
+
+  vertex=glCreateShader(GL_VERTEX_SHADER);
+  glShaderSource(vertex,1,&vertexS,NULL);
+  glCompileShader(vertex);
+  glGetShaderiv(vertex,GL_COMPILE_STATUS,&status);
+  if (!status) {
+    logW("failed to compile vertex shader\n");
+    glGetShaderInfoLog(vertex,4095,&infoLogLen,infoLog);
+    infoLog[infoLogLen]=0;
+    logW("%s\n",infoLog);
+    return false;
+  }
+
+  fragment=glCreateShader(GL_FRAGMENT_SHADER);
+  glShaderSource(fragment,1,&fragmentS,NULL);
+  glCompileShader(fragment);
+  glGetShaderiv(fragment,GL_COMPILE_STATUS,&status);
+  if (!status) {
+    logW("failed to compile fragment shader\n");
+    glGetShaderInfoLog(fragment,4095,&infoLogLen,infoLog);
+    infoLog[infoLogLen]=0;
+    logW("%s\n",infoLog);
+    return false;
+  }
+
+  program=glCreateProgram();
+  glAttachShader(program,vertex);
+  glAttachShader(program,fragment);
+  glBindAttribLocation(program,0,"in_position");
+  glBindAttribLocation(program,1,"in_TexCoord");
+  glLinkProgram(program);
+  glGetProgramiv(program,GL_LINK_STATUS,&status);
+  if (!status) {
+    logW("failed to link shader!\n");
+    glGetProgramInfoLog(program,4095,&infoLogLen,infoLog);
+    infoLog[infoLogLen]=0;
+    logW("%s\n",infoLog);
+    return false;
+  }
+
+  return true;
+}
 
 bool initEGL() {
   // init output buffer
@@ -846,44 +899,23 @@ bool initEGL() {
   }
 
   // initialize OpenGL
-  int shStatus;
   logD("initialize shader...\n");
-  renderVertexS=glCreateShader(GL_VERTEX_SHADER);
-  glShaderSource(renderVertexS,1,&renderVertex,NULL);
-  glCompileShader(renderVertexS);
-  glGetShaderiv(renderVertexS,GL_COMPILE_STATUS,&shStatus);
-  if (!shStatus) {
-    logE("failed to compile vertex shader!\n");
-    return false;
-  }
-
-  renderFragmentS=glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(renderFragmentS,1,&renderFragment,NULL);
-  glCompileShader(renderFragmentS);
-  glGetShaderiv(renderFragmentS,GL_COMPILE_STATUS,&shStatus);
-  if (!shStatus) {
-    logE("failed to compile fragment shader!\n");
-    return false;
-  }
-
-  renderProgram=glCreateProgram();
-  glAttachShader(renderProgram,renderVertexS);
-  glAttachShader(renderProgram,renderFragmentS);
-  glBindAttribLocation(renderProgram,0,"in_position");
-  glBindAttribLocation(renderProgram,1,"in_TexCoord");
-  glLinkProgram(renderProgram);
-  glGetProgramiv(renderProgram,GL_LINK_STATUS,&shStatus);
-  if (!shStatus) {
-    logE("failed to link shader!\n");
-    return false;
-  }
+  if (!createShader(renderVertex,renderFragment,renderVertexS,renderFragmentS,renderProgram)) return false;
+  if (!createShader(mblurVertex,mblurFragment,mblurVertexS,mblurFragmentS,mblurProgram)) return false;
 
   logD("initialize the rest...\n");
   glViewport(0,0,ow,oh);
   glDisable(GL_DEPTH_TEST);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+
   renderTexture=glGetUniformLocation(renderProgram,"uTexture");
+
+  mblur_uTexture=glGetUniformLocation(mblurProgram,"uTexture");
+  mblur_uCenter=glGetUniformLocation(mblurProgram,"uCenter");
+  mblur_uVelocity=glGetUniformLocation(mblurProgram,"uVelocity");
+  mblur_uSamples=glGetUniformLocation(mblurProgram,"uSamples");
+  mblur_uAlpha=glGetUniformLocation(mblurProgram,"uAlpha");
 
   glGenBuffers(1,&planeTriBO);
 
@@ -1038,6 +1070,9 @@ bool composeFrameEGL() {
   unsigned int curPos=cursorPos;
   short cursorX=curPos>>16;
   short cursorY=curPos&0xffff;
+  short lastCursorX=lastCurPos>>16;
+  short lastCursorY=lastCurPos&0xffff;
+  lastCurPos=curPos;
 
   // prepare positions
   int index=0;
@@ -1090,14 +1125,41 @@ bool composeFrameEGL() {
 
   // ???
   int first=0;
+  index=0;
   for (DarmPlane& i: availPlanes) {
     if (first && !captureCursor) break;
-    glUseProgram(renderProgram);
+    if (first) {
+      glUseProgram(mblurProgram);
+    } else {
+      glUseProgram(renderProgram);
+    }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES,i.texture);
-    glUniform1i(renderTexture,0);
+    if (first) {
+      glUniform1i(mblur_uTexture,0);
+      glUniform2f(mblur_uCenter,
+        (planeTri[index][0]+planeTri[index][3])*0.5,
+        (planeTri[index][1]+planeTri[index][7])*0.5
+      );
+      glUniform2f(
+        mblur_uVelocity,
+        (float)(lastCursorX-cursorX)/((float)i.fb->width*0.5),
+        (float)(lastCursorY-cursorY)/((float)i.fb->height*0.5)
+      );
+      float samples=sqrt(pow(cursorX-lastCursorX,2.0)+pow(cursorY-lastCursorY,2.0));
+      if (samples<0.1) samples=0.1;
+      if (samples>50) samples=50.0;
+      float alpha=1.0/((samples<1)?samples:pow(samples,0.8));
+      if (alpha<0.0) alpha=0.0;
+      if (alpha>1.0) alpha=1.0;
+      glUniform1f(mblur_uSamples,samples);
+      glUniform1f(mblur_uAlpha,alpha);
+    } else {
+      glUniform1i(renderTexture,0);
+    }
     glDrawArrays(GL_TRIANGLE_STRIP,first,4);
     first+=4;
+    index++;
   }
 
   // debug overlay
