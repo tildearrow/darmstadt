@@ -377,58 +377,60 @@ void* encodeThread(void*) {
       scaler.pipeline_flags=0;
       scaler.filter_flags=VA_FILTER_SCALING_HQ;
 
-      if (hesse) {
-        // HESSE NVENC/MEITNER SOFTWARE CODE BEGIN //
-        hardFrame->pts=(vtime[compoReadU].tv_sec*100000+vtime[compoReadU].tv_nsec/10000);
-        hardFrame->pkt_dts=hardFrame->pts;
+      int lastPTS=hardFrame->pts;
+      hardFrame->pts=(vtime[compoReadU].tv_sec*100000+vtime[compoReadU].tv_nsec/10000);
+      hardFrame->pkt_dts=hardFrame->pts;
 
-        // how come this fails? we need to rescale!
-        if ((vaStat=vaGetImage(vaInst,portFrame,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
-          logW("couldn't get image! %x\n",vaStat);
-        }
-        if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
-          logW("oh come on! %x\n",vaStat);
-        }
-        hardFrame->data[0]=addr;
-        writeFrame(encoder,hardFrame,out,stream);
-        if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
-          logE("could not unmap buffer: %x...\n",vaStat);
-        }
-        // HESSE NVENC/MEITNER SOFTWARE CODE END //
+      if (lastPTS==hardFrame->pts) {
+        printf("\x1b[2K\x1b[1;31m%d: duplicate frame. skipping!\x1b[m\n",frame);
       } else {
-        // VA-API ENCODE SINGLE-THREAD CODE BEGIN //
-        hardFrame->pts=(vtime[compoReadU].tv_sec*100000+vtime[compoReadU].tv_nsec/10000);
-        hardFrame->pkt_dts=hardFrame->pts;
-        //printf("PTS: %d\n",hardFrame->pts);
-    
-        // convert
-        massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
-    
-        if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[1]))!=VA_STATUS_SUCCESS) {
-          printf("vaBeginPicture fail: %x\n",vaStat);
-          continue;
+        if (hesse) {
+          // HESSE NVENC/MEITNER SOFTWARE CODE BEGIN //
+
+          // how come this fails? we need to rescale!
+          if ((vaStat=vaGetImage(vaInst,portFrame,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+            logW("couldn't get image! %x\n",vaStat);
+          }
+          if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
+            logW("oh come on! %x\n",vaStat);
+          }
+          hardFrame->data[0]=addr;
+          writeFrame(encoder,hardFrame,out,stream);
+          if ((vaStat=vaUnmapBuffer(vaInst,img.buf))!=VA_STATUS_SUCCESS) {
+            logE("could not unmap buffer: %x...\n",vaStat);
+          }
+          // HESSE NVENC/MEITNER SOFTWARE CODE END //
+        } else {
+          // VA-API ENCODE SINGLE-THREAD CODE BEGIN //
+          // convert
+          massAbbrev=((AVVAAPIFramesContext*)(((AVHWFramesContext*)hardFrame->hw_frames_ctx->data)->hwctx));
+      
+          if ((vaStat=vaBeginPicture(vaInst,scalerC,massAbbrev->surface_ids[1]))!=VA_STATUS_SUCCESS) {
+            printf("vaBeginPicture fail: %x\n",vaStat);
+            continue;
+          }
+          if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
+            printf("param buffer creation fail: %x\n",vaStat);
+            continue;
+          }
+          if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
+            printf("vaRenderPicture fail: %x\n",vaStat);
+            continue;
+          }
+          if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
+            printf("vaEndPicture fail: %x\n",vaStat);
+            continue;
+          }
+          if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
+            printf("vaDestroyBuffer fail: %x\n",vaStat);
+            continue;
+          }
+          
+          writeFrame(encoder,hardFrame,out,stream);
+          // VA-API ENCODE SINGLE-THREAD CODE END //
         }
-        if ((vaStat=vaCreateBuffer(vaInst,scalerC,VAProcPipelineParameterBufferType,sizeof(scaler),1,&scaler,&scalerBuf))!=VA_STATUS_SUCCESS) {
-          printf("param buffer creation fail: %x\n",vaStat);
-          continue;
-        }
-        if ((vaStat=vaRenderPicture(vaInst,scalerC,&scalerBuf,1))!=VA_STATUS_SUCCESS) {
-          printf("vaRenderPicture fail: %x\n",vaStat);
-          continue;
-        }
-        if ((vaStat=vaEndPicture(vaInst,scalerC))!=VA_STATUS_SUCCESS) {
-          printf("vaEndPicture fail: %x\n",vaStat);
-          continue;
-        }
-        if ((vaStat=vaDestroyBuffer(vaInst,scalerBuf))!=VA_STATUS_SUCCESS) {
-          printf("vaDestroyBuffer fail: %x\n",vaStat);
-          continue;
-        }
-        
-        writeFrame(encoder,hardFrame,out,stream);
-        // VA-API ENCODE SINGLE-THREAD CODE END //
+        //av_frame_free(&hardFrame);
       }
-      //av_frame_free(&hardFrame);
 
       if ((vaStat=vaSyncSurface(vaInst,portFrame))!=VA_STATUS_SUCCESS) {
         printf("no surface sync %x\n",vaStat);
@@ -2680,6 +2682,8 @@ int main(int argc, char** argv) {
   drmWaitVBlank(fd,&vblank);
   vreply=vblank.reply;
   startSeq=vreply.sequence;
+
+  hardFrame->pts=-1;
   
   ioctl(1,TIOCGWINSZ,&winSize);
   if (audioType!=audioTypeNone) ae->start();
