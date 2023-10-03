@@ -214,7 +214,7 @@ const char* renderFragment=
   "varying vec2 vTexCoord;\n"
   "\n"
   "void main() {\n"
-  "  gl_FragColor=texture2D(uTexture,vTexCoord);\n"
+  "  gl_FragColor=clamp(vec4(texture2D(uTexture,vTexCoord).xyz,1.0f),0.0f,1.0f);\n"
   "}\n";
 
 // EFFECTS - motion blur
@@ -320,6 +320,12 @@ end:
 
 void* encodeThread(void*) {
   std::unique_lock<std::mutex> lock(compoEventLock);
+  errno=0;
+  if (nice(1)==-1) {
+    if (errno!=0) {
+      logW("couldn't set encoding thread priority!\n");
+    }
+  }
   while (true) {
     int compoWriteS=compoWrite;
 
@@ -567,6 +573,13 @@ void* encodeThread(void*) {
 }
 
 void* x11CursorThread(void*) {
+  errno=0;
+  if (nice(-1)==-1) {
+    if (errno!=0) {
+      logW("couldn't set encoding thread priority!\n");
+    }
+  }
+
   while (true) {
     if (quit) break;
     x11Inst=XOpenDisplay(NULL);
@@ -2633,6 +2646,13 @@ int main(int argc, char** argv) {
   }
   
   logI("recording!\n");
+
+  errno=0;
+  if (nice(-4)==-1) {
+    if (errno!=0) {
+      logW("couldn't set encoding thread priority!\n");
+    }
+  }
   
   frame=0;
   
