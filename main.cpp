@@ -1058,7 +1058,7 @@ bool composeFrameEGL() {
     EGLint imageAttr[]={
       EGL_WIDTH, (int)i.fb->width,
       EGL_HEIGHT, (int)i.fb->height,
-      EGL_LINUX_DRM_FOURCC_EXT, GBM_FORMAT_ARGB8888,
+      EGL_LINUX_DRM_FOURCC_EXT, (int)((i.fb->depth==30)?GBM_FORMAT_XRGB2101010:GBM_FORMAT_ARGB8888),
       EGL_DMA_BUF_PLANE0_FD_EXT, i.buf,
       EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
       EGL_DMA_BUF_PLANE0_PITCH_EXT, (int)i.fb->pitch,
