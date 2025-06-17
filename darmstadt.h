@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -44,7 +45,7 @@ extern "C" {
 
 #define DEVICE_PATH "/dev/dri/card1"
 
-#define DARM_VERSION "v4.0pre1"
+#define DARM_VERSION "v4.1"
 
 #define DARM_RINGBUF_SIZE 134217728
 
@@ -206,7 +207,7 @@ class WriteCache {
   public:
     void* run();
 
-    int write(unsigned char* buf, ssize_t len);
+    int write(const unsigned char* buf, ssize_t len);
     int seek(ssize_t pos, int whence);
     ssize_t queueSize();
     bool flush();

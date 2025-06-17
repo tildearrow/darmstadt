@@ -53,6 +53,7 @@ struct timespec wtStart, wtEnd;
 int dw, dh, ow, oh;
 int cx, cy, cw, ch;
 int frameQueueSize=8;
+int cursorMethod=0;
 bool doCrop=false;
 bool captureCursor=true;
 bool drawDebug=false;
@@ -75,6 +76,7 @@ int allowedFormatsSize;
 int theFormat;
 int vaStat;
 int fskip;
+int frate;
 int throttleRate;
 int throttlePos;
 bool paused, noSignal;
@@ -123,10 +125,17 @@ std::mutex compoEventLock;
 std::condition_variable compoEvent;
 pthread_t encThread;
 
-// X11 CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
-pthread_t x11Thread;
+// CURSOR INFORMATION (workaround until I find a way to get cursor position using DRM) //
+pthread_t cursorThread;
+// X11
 Display* x11Inst;
 Window x11Screen;
+// socket
+int socketfd=-1;
+struct sockaddrA {
+  sa_family_t family;
+  char path[PATH_MAX];
+} sockaddr;
 // (X, Y) 16.16
 std::atomic<unsigned int> cursorPos;
 unsigned int lastCurPos=0;
@@ -264,7 +273,7 @@ const char* mblurFragment=
   "}\n";
 
 // stuff
-int writeToCache(void*, unsigned char* buf, int size) {
+int writeToCache(void*, const unsigned char* buf, int size) {
   bitRatePre+=size;
   totalWritten+=size;
   if ((curTime(CLOCK_MONOTONIC)-brTime)>mkts(2,0)) {
@@ -335,7 +344,11 @@ void* encodeThread(void*) {
 
       intptr_t boFD=gbm_bo_get_fd(compoBo[compoReadU]);
       if (boFD<0) {
-        logE("could not fuck the BO\n");
+        logE("could not fuck the BO %s\n",strerror(errno));
+        if (++compoReadU>=frameQueueSize) {
+          compoReadU=0;
+        }
+        compoRead=compoReadU;
         continue;
       }
 
@@ -359,7 +372,7 @@ void* encodeThread(void*) {
       coAttr[1].value.type=VAGenericValueTypePointer;
       coAttr[1].value.value.p=&vaCompoBD;
 
-      if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,dw,dh,&portFrame,1,coAttr,3))!=VA_STATUS_SUCCESS) {
+      if ((vaStat=vaCreateSurfaces(vaInst,VA_RT_FORMAT_RGB32,ow,oh,&portFrame,1,coAttr,3))!=VA_STATUS_SUCCESS) {
         logE("could not create surface for compositing... %x\n",vaStat);
         continue;
       }
@@ -394,7 +407,7 @@ void* encodeThread(void*) {
           // HESSE NVENC/MEITNER SOFTWARE CODE BEGIN //
 
           // how come this fails? we need to rescale!
-          if ((vaStat=vaGetImage(vaInst,portFrame,0,0,dw,dh,img.image_id))!=VA_STATUS_SUCCESS) {
+          if ((vaStat=vaGetImage(vaInst,portFrame,0,0,ow,oh,img.image_id))!=VA_STATUS_SUCCESS) {
             logW("couldn't get image! %x\n",vaStat);
           }
           if ((vaStat=vaMapBuffer(vaInst,img.buf,(void**)&addr))!=VA_STATUS_SUCCESS) {
@@ -519,6 +532,7 @@ void* encodeThread(void*) {
             lastATime=audioPack->time;
             delete audioPack;
             sATime=sATime+mkts(0,23219955);
+            //sATime=sATime+mkts(0,533333);
             if (avcodec_send_frame(audEncoder,audFrame)<0) {
               logW("couldn't write audio frame!\n");
               break;
@@ -602,6 +616,52 @@ void* x11CursorThread(void*) {
       usleep(10000);
     }
     XCloseDisplay(x11Inst);
+  }
+
+  return NULL;
+}
+
+void* socketCursorThread(void*) {
+  errno=0;
+  if (nice(-1)==-1) {
+    if (errno!=0) {
+      logW("couldn't set encoding thread priority!\n");
+    }
+  }
+
+  while (true) {
+    if (quit) break;
+    socketfd=socket(AF_UNIX,SOCK_STREAM,0);
+    if (socketfd<0) {
+      logD("failed to create socket! retrying in 10 seconds...\n");
+      sleep(10);
+      continue;
+    }
+
+    sockaddr.family=AF_UNIX;
+    strncpy(sockaddr.path,"/tmp/darmcursor",PATH_MAX);
+
+    if (connect(socketfd,(struct sockaddr*)&sockaddr,sizeof(sa_family_t)+strlen(sockaddr.path)+1)<0) {
+      close(socketfd);
+      logD("failed to connect to cursor socket! retrying in 10 seconds...\n");
+      sleep(10);
+      continue;
+    }
+
+    while (true) {
+      if (quit) break;
+
+      float cursorBuf[2];
+
+      if (read(socketfd,cursorBuf,sizeof(cursorBuf))!=sizeof(cursorBuf)) {
+        logW("cursor socket failure");
+        break;
+      }
+      cursorPos=((unsigned short)(cursorBuf[0]*2.0)<<16)|((unsigned short)(cursorBuf[1]*2.0));
+
+    }
+    close(socketfd);
+    socketfd=-1;
   }
 
   return NULL;
@@ -1090,15 +1150,31 @@ bool composeFrameEGL() {
   lastCurPos=curPos;
 
   // prepare positions
+  // ok - WHAT? how!
   int index=0;
   for (DarmPlane& i: availPlanes) {
+    //logD("PLANE %d: %d %d\n",i.plane->plane_id,i.plane->x,i.plane->y);
     if (index && !captureCursor) break;
+    /*if (index) {
+      curPos=(i.plane->crtc_x<<16)|(i.plane->crtc_y&0xffff);
+      lastCurPos=curPos;
+      cursorX=curPos>>16;
+      cursorY=curPos&0xffff;
+      lastCursorX=cursorX;
+      lastCursorY=cursorY;
+    }*/
     int px=index?cursorX:i.plane->x;
     int py=index?cursorY:i.plane->y;
     double x=((double)px/((double)ow*0.5))-1.0;
     double y=((double)py/((double)oh*0.5))-1.0;
     double w=(i.fb->width/((double)ow*0.5));
     double h=(i.fb->height/((double)oh*0.5));
+    if (!index) {
+      x=-1;
+      y=-1;
+      w=2;
+      h=2;
+    }
     planeTri[index][0]=x;
     planeTri[index][1]=y;
     planeTri[index][2]=0.0f;
@@ -1513,6 +1589,22 @@ bool pSetSkip(string u) {
   return true;
 }
 
+bool pSetTimer(string u) {
+  syncMethod=syncTimer;
+  try {
+    frate=stoi(u);
+  } catch (std::exception& err) {
+    logE("invalid framerate value.\n");
+    return false;
+  }
+  if (frate<2) {
+    logE("framerate must be at least 2.\n");
+    return false;
+  }
+  frate=1000000000/frate;
+  return true;
+}
+
 bool pSetQueue(string u) {
   try {
     frameQueueSize=stoi(u);
@@ -1819,6 +1911,18 @@ bool pSetCursor(string val) {
   return true;
 }
 
+bool pSetCursorType(string val) {
+  if (val=="x11") {
+    cursorMethod=0;
+  } else if (val=="socket") {
+    cursorMethod=1;
+  } else {
+    logE("cursortype must be either x11 or socket.\n");
+    return false;
+  }
+  return true;
+}
+
 bool pSetQuality(string val) {
   try {
     qp=stoi(val);
@@ -1899,11 +2003,13 @@ void initParams() {
   // video options
   categories.push_back(Category("Video options","size"));
   // TODO: fix these later...
-  //params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
+  params.push_back(Param("s","size",true,pSetVideoSize,"WIDTHxHEIGHT","set output size"));
   //params.push_back(Param("c","crop",true,pSetVideoCrop,"WIDTHxHEIGHT+X+Y","crop screen contents"));
   //params.push_back(Param("sc","scale",true,pSetVideoScale,"fit|fill|orig","set scaling method")); // TODO, methods not done
-  params.push_back(Param("C","cursor",true,pSetCursor,"on|off","enable/disable X11 cursor overlay"));
+  params.push_back(Param("C","cursor",true,pSetCursor,"on|off","enable/disable cursor overlay"));
+  params.push_back(Param("c","cursortype",true,pSetCursorType,"x11|socket","set cursor position retrieval method"));
   params.push_back(Param("S","skip",true,pSetSkip,"value","set frameskip value"));
+  params.push_back(Param("t","timer",true,pSetTimer,"value","use a timer instead of VBlank for sync (value is frame rate)"));
   params.push_back(Param("Q","queue",true,pSetQueue,"value","set frame queue size (between 4 and 64)"));
   params.push_back(Param("10","10bit",false,pSet10Bit,"","use 10-bit pixel format"));
   params.push_back(Param("4","absoluteperfection",false,pSet444,"","use YUV 4:4:4 mode (NVIDIA-only)"));
@@ -1975,6 +2081,7 @@ int main(int argc, char** argv) {
   bitRatePre=0;
   framerate=0;
   fskip=1;
+  frate=8333333;
   throttlePos=0;
   throttleRate=0;
   qp=-1;
@@ -2609,8 +2716,22 @@ int main(int argc, char** argv) {
 
   // CURSOR INIT BEGIN //
   if (captureCursor) {
-    if (pthread_create(&x11Thread,NULL,x11CursorThread,NULL)!=0) {
-      logW("couldn't create cursor thread!\n");
+    switch (cursorMethod) {
+      case 0: { // X11
+        if (pthread_create(&cursorThread,NULL,x11CursorThread,NULL)!=0) {
+          logW("couldn't create cursor thread!\n");
+        }
+        break;
+      }
+      case 1: { // socket
+        if (pthread_create(&cursorThread,NULL,socketCursorThread,NULL)!=0) {
+          logW("couldn't create cursor thread!\n");
+        }
+        break;
+      }
+      default:
+        logE("cursor method %d is invalid!\n",cursorMethod);
+        break;
     }
   }
   // CURSOR INIT END //
@@ -2657,6 +2778,7 @@ int main(int argc, char** argv) {
   frame=0;
   
   struct timespec nextMilestone=mkts(0,0);
+  struct timespec nextMilestoneT=curTime(CLOCK_MONOTONIC);
   lastATime=curTime(CLOCK_MONOTONIC);
   sATime=lastATime;
   
@@ -2709,24 +2831,26 @@ int main(int argc, char** argv) {
   if (audioType!=audioTypeNone) ae->start();
   // TODO: use RELATIVE now?
   while (1) {
-    vblank.request.sequence=startSeq+fskip;
-    vblank.request.type=DRM_VBLANK_ABSOLUTE;
+    if (syncMethod==syncVBlank) {
+      vblank.request.sequence=startSeq+fskip;
+      vblank.request.type=DRM_VBLANK_ABSOLUTE;
     
-    if (drmWaitVBlank(fd,&vblank)<0) {
-      noSignal=true;
-      usleep(62500);
-    } else {
-      noSignal=false;
-    }
-    vreply=vblank.reply;
-    startSeq+=fskip;
-    if ((vblank.reply.sequence-startSeq)>0) {
-      printf("\x1b[2K\x1b[1;31m%d: dropped frame! (%d)\x1b[m\n",frame,++recal);
-      startSeq=vreply.sequence;
+      if (drmWaitVBlank(fd,&vblank)<0) {
+        noSignal=true;
+        usleep(62500);
+      } else {
+        noSignal=false;
+      }
+      vreply=vblank.reply;
+      startSeq+=fskip;
+      if ((vblank.reply.sequence-startSeq)>0) {
+        printf("\x1b[2K\x1b[1;31m%d: dropped frame! (%d)\x1b[m\n",frame,++recal);
+        startSeq=vreply.sequence;
+      }
     }
     
     dtime=vtimeGlobal;
-    vtimeGlobal=mkts(vreply.tval_sec,vreply.tval_usec*1000)-btime;
+    vtimeGlobal=(syncMethod==syncTimer)?nextMilestone:(mkts(vreply.tval_sec,vreply.tval_usec*1000)-btime);
     if (btime==mkts(0,0)) {
       btime=vtimeGlobal;
       vtimeGlobal=mkts(0,0);
@@ -2737,9 +2861,13 @@ int main(int argc, char** argv) {
     }
     
     if (syncMethod==syncTimer) {
-      if (vtimeGlobal<nextMilestone) continue;
-      nextMilestone=nextMilestone+mkts(0,16666667);
-      while ((vtimeGlobal-mkts(0,16666667))>nextMilestone) nextMilestone=nextMilestone+mkts(0,16666667);
+      struct timespec remainTime;
+      struct timespec sleepTime;
+      struct timespec actualTime=curTime(CLOCK_MONOTONIC);
+      nextMilestone=nextMilestone+mkts(0,frate);
+      nextMilestoneT=nextMilestoneT+mkts(0,frate);
+      sleepTime=nextMilestoneT-actualTime;
+      nanosleep(&sleepTime,&remainTime);
     }
     long int delta=(vtimeGlobal-dtime).tv_nsec;
     if (delta!=0) delta=(int)round((double)1000000000/(double)delta);

@@ -45,7 +45,7 @@ void* WriteCache::run() {
   return NULL;
 }
 
-int WriteCache::write(unsigned char* buf, ssize_t len) {
+int WriteCache::write(const unsigned char* buf, ssize_t len) {
   unsigned char* nbuf;
   if (!running) {
     return ::write(o,buf,len);
