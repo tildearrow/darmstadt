@@ -2540,6 +2540,7 @@ int main(int argc, char** argv) {
       }
     }
   } else {
+    // TODO: these numbers are reversed in Mesa 25.
     switch (encSpeed) {
       case encPerformance:
         av_dict_set(&encOpt,"compression_level","7",0);
@@ -2595,10 +2596,22 @@ int main(int argc, char** argv) {
     logD("creating audio stream...\n");
     audStream=avformat_new_stream(out,NULL);
     audStream->start_time=0;
+
+    const AVSampleFormat* validSampleFormats=NULL;
+    int numSampleFormats=0;
     
     logD("creating audio codec context...\n");
     audEncoder=avcodec_alloc_context3(audEncInfo);
-    audEncoder->sample_fmt=audEncInfo->sample_fmts?audEncInfo->sample_fmts[0]:AV_SAMPLE_FMT_FLTP;
+    if (avcodec_get_supported_config(NULL,audEncInfo,AV_CODEC_CONFIG_SAMPLE_FORMAT,0,(const void**)&validSampleFormats,&numSampleFormats)==0) {
+      if (validSampleFormats==NULL || numSampleFormats<1) {
+        audEncoder->sample_fmt=AV_SAMPLE_FMT_FLTP;
+      } else {
+        audEncoder->sample_fmt=validSampleFormats[0];
+      }
+    } else {
+      logW("couldn't retrieve usable sample formats! falling back to float.\n");
+      audEncoder->sample_fmt=AV_SAMPLE_FMT_FLTP;
+    }
     audEncoder->sample_rate=ae->sampleRate();
     audEncoder->ch_layout.nb_channels=ae->channels();
     audEncoder->ch_layout.order=AV_CHANNEL_ORDER_NATIVE;
@@ -2758,7 +2771,7 @@ int main(int argc, char** argv) {
   if (qp==0) printf("\x1b[1;31m> !!! -> -> LOSSLESS <- <- !!! <\x1b[m\n");
   printf("\x1b[1m|\x1b[m\n");
   if (meitner) {
-    printf("\x1b[1m- screen %dx%d, output %dx%d, %s, %s\x1b[m\n",dw,dh,ow,oh,"RGB 4:4:4",encName.c_str());
+    printf("\x1b[1m- screen %dx%d, output %dx%d, %s, %s\x1b[m\n",dw,dh,ow,oh,"RGB",encName.c_str());
   } else {
     printf("\x1b[1m- screen %dx%d, output %dx%d, YUV %s, %s\x1b[m\n",dw,dh,ow,oh,absolPerf?("4:4:4"):("4:2:0"),encName.c_str());
   }
