@@ -45,7 +45,7 @@ extern "C" {
 
 #define DEVICE_PATH "/dev/dri/card1"
 
-#define DARM_VERSION "v4.1"
+#define DARM_VERSION "v4.1.1"
 
 #define DARM_RINGBUF_SIZE 134217728
 

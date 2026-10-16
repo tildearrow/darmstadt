@@ -2334,15 +2334,6 @@ int main(int argc, char** argv) {
   string vendorName=vaQueryVendorString(vaInst);
   logD("va-api instance opened. %s.\n",vendorName.c_str());
   
-  // warn the user about newer Mesa releases
-  if (vendorName.find("Mesa")!=std::string::npos) {
-    if (vendorName.find("19.0")==std::string::npos) {
-      if (devImportance(autoDevice)==2) {
-        logW("Mesa versions after 19.0 may hang on certain AMD cards while recording! be careful!\n");
-      }
-    }
-  }
-  
   logD("querying image formats\n");
   vaQueryImageFormats(vaInst,allowedFormats,&allowedFormatsSize);
   
@@ -2762,11 +2753,11 @@ int main(int argc, char** argv) {
   
   printf("\x1b[1m|\x1b[m\n");
   if (meitner) {
-    printf("\x1b[1m|\x1b[0;34m ~~~~> \x1b[1;33mDARMSTADT => EGL <= (meitner mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[0;34m ~~~~> \x1b[1;33mDARMSTADT (meitner mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
   } else if (hesse) {
-    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT => EGL <= (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[0;32m ~~~~> \x1b[1;32mDARMSTADT (hesse mode) \x1b[0;32m" DARM_VERSION "\x1b[m\n");
   } else {
-    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT => EGL <= \x1b[1;32m" DARM_VERSION "\x1b[m\n");
+    printf("\x1b[1m|\x1b[1;33m ~~~~> \x1b[1;36mDARMSTADT \x1b[1;32m" DARM_VERSION "\x1b[m\n");
   }
   if (qp==0) printf("\x1b[1;31m> !!! -> -> LOSSLESS <- <- !!! <\x1b[m\n");
   printf("\x1b[1m|\x1b[m\n");
